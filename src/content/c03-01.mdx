@@ -1,0 +1,259 @@
+# 被借用检查改写的那部分架构
+
+> 「不可同时持二 `&mut`。」
+>
+> ——《借用福音》第一章
+
+很多人以为 Rust 只是「没有 GC 的 C++」。于是他们带着 Unity 的脑子进来，想写一个 `GameObject`，然后被编译器按在地上。
+
+这不是编译器的脾气问题。**借用检查不是语法糖，它是一条架构约束**：它禁止的东西，会逼你把数据结构改成另一种形状。你后来看到的 ECS、句柄、资源表、命令缓冲、系统调度器——不是谁的设计品味，而是被这条约束一路推出来的必然产物。
+
+这一课不讲怎么用 `Rc<RefCell<T>>` 绕过它。我们讲：**为什么绕过去通常是错的，以及正规解法长什么样。**
+
+## 一个 Unity 片段
+
+先看一段所有人都写过的代码：
+
+```csharp
+var go = new GameObject("player");
+go.transform.position = new Vector3(0, 1, 0);
+
+var body = go.AddComponent<Rigidbody>();
+body.mass = 70;
+
+// 任何地方，任何时候
+var t = go.transform;      // 再拿一份引用
+t.position.x += 1;         // 改它
+```
+
+这段代码能跑，是因为 C# 给了你三样东西：**引用到处传、对象由 GC 管、可变别名随便造**。
+
+`go`、`t`、`body` 同时指向同一块内存，谁都能改。GC 保证对象不会提前死。这就是 Unity 的 GameObject 模型：**对象是一等公民，引用是默认的交互方式**。
+
+Rust 三样都不给。
+
+## `transform.position = ...` 到底做了什么
+
+把那行代码翻译成 Rust 的语义：
+
+```rust
+(*go.transform).position = Vector3::new(0.0, 1.0, 0.0);
+```
+
+要写这个字段，你需要 `&mut *go.transform`——一个指向 `transform` 的**可变引用**。
+
+于是第一个问题出现了：`go` 里存着 `transform`，那 `go` 自己是不是也被借用了？
+
+在 Rust 里，访问 `go.transform` 要么是 `&go.transform`（只读），要么是 `&mut go.transform`（可写）。而写字段需要后者。也就是说：
+
+> **改一个组件，等于可变借用它的父对象。**
+
+如果此时别的地方还拿着 `&go`，编译器直接拒绝。这不是「小心一点就能过」，这是硬性规则。
+
+## 两个可变引用
+
+Rust 的借用规则只有一句：
+
+> 同一时刻，要么任意多个 `&T`，要么恰好一个 `&mut T`。
+
+这条规则在单线程里就已经生效，和线程无关。它的目的是**让「谁在改」永远可判定**——编译器不需要读你的注释，就能知道两个引用会不会打架。
+
+现在看引擎里最常见的结构：
+
+```rust
+struct Node {
+    parent: Option<Box<Node>>,   // 子指向父
+    children: Vec<Box<Node>>,    // 父拥有子
+}
+```
+
+这行代码编译不过，而且不是因为写法不对，是因为**它要求在内存里存在环**。环意味着：从 `child` 出发能改 `parent`，从 `parent` 出发也能改 `child`。两个 `&mut` 同时存在。
+
+Rust 的答案很直接：**不允许**。
+
+## 所有权不是垃圾回收
+
+很多人把「没有 GC」理解成「要手动 free」。这理解偏了。
+
+Rust 的所有权是：**每块数据有且只有一个所有者；所有者离开作用域，数据就销毁**。它解决的不是「什么时候 free」，而是「谁有权改」。
+
+对比一下：
+
+| | Unity / C# | Rust |
+|---|---|---|
+| 谁持有对象 | 谁都可以持引用 | 恰好一个所有者 |
+| 对象何时死 | GC 决定 | 所有者作用域结束 |
+| 能否同时改 | 可以，靠程序员自觉 | 不行，编译器拒绝 |
+| 环状引用 | 正常 | 内存泄漏或编译失败 |
+| 跨线程共享 | 加锁 / 不管 | `Send` / `Sync` 显式声明 |
+
+C# 把「同时改」的自由给了你，代价是数据竞争、生命周期不确定、以及 GC 停顿。Rust 把这些自由收走，换来确定性。
+
+**引擎最需要的恰恰是确定性**。所以这笔交易通常划算——前提是你愿意换数据结构。
+
+## 父子指针的死结
+
+如果你硬要在 Rust 里写树，最直觉的两种写法都会撞墙。
+
+**写法一：子持有父的 `&`**
+
+```rust
+struct Node<'a> {
+    parent: Option<&'a Node<'a>>,
+    children: Vec<Node<'a>>,
+}
+```
+
+`children` 里的每个节点都要借 `self`，而 `self` 又拥有 `children`——自引用，生命周期写不出来。
+
+**写法二：`Rc<RefCell<Node>>`**
+
+```rust
+struct Node {
+    parent: Option<Rc<RefCell<Node>>>,
+    children: Vec<Rc<RefCell<Node>>>,
+}
+```
+
+这能编译。但它把编译期检查换成了**运行时检查**：两次 `borrow_mut()` 同时存在，程序 panic。更糟的是，父持有子、子持有父，引用计数永远不归零——**整个场景静默泄漏**。
+
+`Rc<RefCell<T>>` 不是解法，是把编译器的枪换成了你自己脚上的枪。
+
+## 句柄与 arena
+
+真正的解法是换一个提问方式。
+
+Unity 问的是：「这个对象在哪？」——所以要指针。
+ECS 问的是：「这个实体的数据在哪？」——所以要**编号**。
+
+编号不借用任何东西。它只是一个 `u32`，可以随便复制、存进数组、跨线程传。
+
+```rust
+pub struct Entity {
+    pub id: u32,
+    pub generation: u32,
+}
+```
+
+看 `prism-ecs` 怎么发的：
+
+```rust ref="prisma:crates/prism-ecs/src/lib.rs#L136-L152"
+    pub fn spawn(&mut self) -> Entity {
+        if let Some(id) = self.free.pop() {
+            // Recycle a freed 槽 销毁 stored the 下一个 generation number
+            // here (old + 1) so a recycled handle is distinguishable from the
+            // stale one that was just freed.
+            let generation = self.entities[id as usize];
+            self.alive[id as usize] = true;
+            self.active[id as usize] = true;
+            Entity { id, generation }
+        } else {
+            let id = self.entities.len() as u32;
+            self.entities.push(0);
+            self.alive.push(true);
+            self.active.push(true);
+            Entity { id, generation: 0 }
+        }
+    }
+```
+
+注意 `generation`：槽位被回收时，代号加一。于是**旧的句柄自动失效**，不会像 C 的悬垂指针那样悄悄改到别人的数据。这叫「代际句柄」，是 Rust 里替代裸指针的标准手段。
+
+## 索引取代指针
+
+拿到编号之后，改数据变成这样：
+
+```rust ref="prisma:crates/prism-ecs/src/lib.rs#L218-L225"
+    pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
+        if !self.is_alive(entity) {
+            return None;
+        }
+        self.pools
+            .get_mut(&TypeId::of::<T>())
+            .and_then(|pool| pool_downcast_mut::<T>(pool.as_mut()).get_mut(entity.id))
+    }
+```
+
+关键在签名：`&mut self` 借的是**整个 World**，不是某个实体。
+
+于是「同时改两个实体」不再是「两个 `&mut` 打架」，而是「World 被借了一次，从里面切出两块不重叠的数据」。后者是可判定的，前者不是。
+
+这就是为什么 ECS 的 API 长这样：**数据的所有权集中在 World，访问权通过查询切分**。你以为是设计模式，其实是被借用检查逼出来的形状。
+
+## 系统代替方法
+
+Unity 里，行为挂在对象上：`enemy.Update()`。
+
+Rust 里，方法需要 `&mut self`。如果每个敌人都在自己的 `Update` 里访问世界（找目标、加血、生成子弹），那就要在持有 `&mut enemy` 的同时再借 `&mut world`——又是一次别名冲突。
+
+于是行为被搬到对象外面：
+
+```rust
+fn movement(world: &mut World, dt: f32) {
+    for (entity, pos, vel) in world.query2_mut::<Position, Velocity>() {
+        pos.0 += vel.0 * dt;
+    }
+}
+```
+
+系统是**自由的函数**，只接收它需要的那部分世界。它不持有对象，所以不存在「对象内部再借世界」的死结。
+
+## 借用分裂
+
+`prism-ecs` 里最漂亮的一段，是 `EntityManager`：
+
+```rust
+pub struct EntityManager<'w> {
+    world: &'w mut World,
+}
+```
+
+```rust ref="prisma:crates/prism-ecs/src/entity_manager.rs#L24-L27"
+```
+
+它只有一件事：**把「结构性修改」和「读取」在类型上分开**。你在 `&mut World` 期间不能查询，查询期间不能增删实体。编译器替你守住了这条边界，你就不需要自己写「正在遍历时不要删除」的注释。
+
+而 `query2_mut` 用了 `get_disjoint_mut` 同时拿两个池子——这是**借用分裂**（borrow splitting）的标准写法：一次性把 `&mut` 切成互不重叠的两份，而不是两次独立借用。
+
+## 其他被 Rust 改写的设计
+
+借用只是第一刀。同样的逻辑还发生在别处：
+
+**没有继承。** 你没法让 `Enemy : Character : Entity`。替代品是组合 + trait：数据用结构体拼，行为用 `impl Trait for T`。引擎里所谓的「组件化」，一半是设计，一半是 Rust 不给继承。
+
+**没有反射。** 你不能 `obj.GetType().GetField("hp")`。替代品是 derive 宏在编译期生成注册表，或者手写 `Component` 的 `TypeId` 映射。序列化、编辑器属性面板、网络同步，全都要为这一点付出代价。
+
+**没有异常。** 错误是 `Result<T, E>`，必须显式传播。好消息是没有隐藏的控制流；坏消息是每个可能失败的调用都要在签名里承认自己会失败。
+
+**没有「先构造再初始化」。** 你不能声明一个字段然后晚点填。替代品是 `Option<T>` 加 `take()`，或者 builder。资源加载的「先占位、后填充」因此变得更啰嗦。
+
+**自引用结构很难写。** 异步 future、图、缓存里的 `&`，都会撞上生命周期。替代品是 `Pin`、arena、索引，或者干脆复制数据。
+
+**单态化会膨胀。** 泛型在编译期为每个类型生成一份代码。引擎里 `query<A>`、`query<B>` 各生成一份，编译时间和二进制体积都会涨。替代品是 `dyn Trait`，但那就丢掉内联和部分优化。
+
+## 架构是语言的函数
+
+把这一课压缩成一句话：
+
+> **你的架构不是你的品味，是语言的形状。**
+
+C# 的架构长成 GameObject + 组件 + 引用；Rust 的架构长成 World + 句柄 + 查询 + 系统。两者都能做游戏，但它们对「什么是一个东西」的定义不同。
+
+所以看到 Rust 引擎里到处是 `Entity(u32)`、`Handle<T>`、`Res<T>`、`Commands`，不要以为作者在炫技。他们只是被借用检查追着跑，跑着跑着，跑出了一套更耐操的结构。
+
+:::warn 别用 `unsafe` 逃课
+`unsafe` 能让代码编译，但不会让设计变对。真正的问题是「谁拥有这块数据」，`unsafe` 只是把这个问题推迟到运行时——而运行时不会给你堆栈。
+:::
+
+:::exercise 把你熟悉的一段代码借出去
+找一段你写过的、对象互相持有的代码（场景树、UI 树、状态机都行），试着把它改成「编号 + 中心表」：
+
+1. 把对象里的引用换成 `u32` 编号；
+2. 把对象本身放进一个 `Vec` 或 `HashMap`；
+3. 把所有 `a.b.c()` 改成 `world.get(a).b(world, c)` 的形状；
+4. 记录你被迫改了多少处签名。
+
+改完之后你会发现：不是 Rust 限制了你的架构，是它逼你把「谁拥有、谁借用、谁修改」这三件事写清楚。这三件事在 C# 里也存在，只是没人逼你面对。
+:::
+
+下一课，我们把这个结论落到一个具体的坑上：`transform.position = ...` 在 Rust 里到底该怎么写。

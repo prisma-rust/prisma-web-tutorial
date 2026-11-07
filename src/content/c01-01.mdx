@@ -1,0 +1,167 @@
+# 造一台发动机
+
+> 太初有帧。帧是空虚混沌，渊面黑暗；引擎的灵运行在时间之上。
+>
+> 引擎说：「要有 tick」，就有了 tick。引擎看 tick 是好的，就把 tick 和帧分开了。
+
+这一课不写代码。我们先把「引擎到底是什么」讲清楚——因为绝大多数自研引擎死掉，不是因为不会写 Vulkan，而是因为一开始就没想清楚**自己在管什么**。
+
+## 引擎不是渲染器
+
+新手最常见的误解：引擎 = 把三角形画到屏幕上。
+
+不是。渲染器只是引擎的一个器官。引擎真正的职责只有一句话：
+
+> **把「不确定性」关进笼子里。**
+
+你的程序会面对这些不可控：操作系统什么时候给你事件、显示器多少赫兹、玩家什么时候拔掉电源、驱动什么时候重置设备、资源什么时候加载完、手机什么时候切到后台。引擎的每一层抽象，都是在为其中一种不确定性造笼子。
+
+笼子造得好，游戏逻辑就可以假装世界是确定的；笼子造得差，这些不确定性就会渗进你的 gameplay 代码，最后变成几百个 `if` 和无法复现的 bug。
+
+## 三只时钟
+
+这是引擎的第一道笼子，也是最容易做错的一道。任何引擎内部同时存在三种时间：
+
+| 时钟 | 来源 | 用途 | 是否可暂停 |
+|---|---|---|---|
+| **真实时间** | `Instant::now()` / 系统时钟 | 限帧、动画、超时 | 否 |
+| **固定 tick** | 累加器切出来的 1/60 秒 | 物理、AI、游戏逻辑 | 是 |
+| **显示帧** | 显卡什么时候能给你一张图 | 渲染、插值 | 否 |
+
+新手会把它们合成一个：`dt = 上一帧到这一帧的时间`，然后拿 `dt` 去更新一切。这在 60Hz 显示器上跑得很好，在 144Hz 上物理变快，在掉帧时角色穿墙。
+
+正确的做法是**把 tick 从帧里切出来**。下面是 Horizon（一个把 Minecraft 复刻到 Rust 的项目）的做法：
+
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L350-L371"
+    pub fn advance(&mut self, elapsed: std::time::Duration) -> u32 {
+        self.now += elapsed;
+        let now_ms = self.now_ms();
+        if self.manager.is_sprinting() {
+            // Keep the timer current so leaving the sprint does not replay it.
+            self.timer.advance_game_time(now_ms, |d| d);
+            let remaining = self.manager.remaining_sprint_ticks();
+            // One extra pass lets the sprint finish and report.
+            return (remaining + 1).min(SPRINT_PER_FRAME) as u32;
+        }
+        let runs = self.manager.base.runs_normally();
+        let mspt = self.manager.base.milliseconds_per_tick();
+        let client = self.client;
+        let ticks = self
+            .timer
+            .advance_game_time(now_ms, |default| match (runs, client) {
+                (true, true) => default.max(mspt),
+                (true, false) => mspt,
+                (false, _) => default,
+            });
+        ticks.clamp(0, 10) as u32
+    }
+```
+
+注意最后一行：`ticks.clamp(0, 10)`。
+
+它没有写「这一帧该跑多少 tick 就跑多少」。它写的是「**最多跑 10 个**，多出来的时间直接扔掉」。这不是偷懒，这是保命。
+
+## 死亡螺旋
+
+假设你的游戏一帧需要 25ms，而 tick 间隔是 16.6ms。于是：
+
+```diagram flow
+真实时间 -> 累加器
+累加器 -> 余量够一个 tick {diamond}
+余量够一个 tick ->|够| 执行一次 tick
+余量够一个 tick ->|不够| 丢弃多余时间
+执行一次 tick -> 渲染插值帧
+丢弃多余时间 -> 渲染插值帧
+```
+
+1. 这一帧积累了 25ms，需要跑 1.5 个 tick；
+2. 跑完 2 个 tick 之后，帧时间变成 40ms；
+3. 下一帧要补 2.4 个 tick，帧时间变成 60ms；
+4. 再下一帧要补 3.6 个 tick……
+
+这就是**死亡螺旋**：你越想追上时间，欠的时间越多，直到游戏彻底卡死。
+
+唯一的出路是承认「**追不上就放弃**」。丢了 200ms 的模拟时间，玩家的感受是「卡了一下」；不丢，玩家的感受是「游戏死了」。
+
+:::warn{title="生产级的第一条铁律"}
+任何「按真实时间步进」的系统，都必须有一个**每帧上限**和一个**丢弃策略**。没有上限的累加器不是引擎，是定时炸弹。
+:::
+
+Horizon 的上限是 10 tick，PrismaRev 的上限在 `tick_sim` 里，引擎实验室里我们用的是 5。数字不重要，重要的是这个上限必须存在，而且必须写在一眼能看到的地方。
+
+## 引擎还得承认自己会死
+
+再看一段真实代码。PrismaRev 的主循环每帧会先检查一件事：
+
+```rust ref="prisma:crates/prism-app/src/app.rs#L867-L882"
+    fn tick_frame(&mut self) -> Option<String> {
+        // The render thread exclusively owns the Vulkan context. If it exited
+        // (renderer init failure or panic), stop instead of spinning a blank
+        // window at 100% CPU.
+        if let Some(handle) = self.render_thread.as_ref() {
+            if handle.is_finished() {
+                return Some(
+                    self.render_shared
+                        .as_ref()
+                        .and_then(|shared| shared.take_render_failure())
+                        .unwrap_or_else(|| {
+                            "render thread exited unexpectedly (see log)".to_string()
+                        }),
+                );
+            }
+        }
+```
+
+渲染线程已经死了，主线程还在欢快地转圈——这是自研引擎最常见的「白屏 + 风扇狂转」。这段代码把它变成一个可报告的错误：**主循环有义务知道自己的器官还在不在跳**。
+
+:::tip{title="为什么这算「生产级」"}
+不是因为它复杂，而是因为它**假设了自己会失败**。教学代码写「正常路径」，生产代码写「所有路径」，尤其是那条没人愿意想的路径。
+:::
+
+## 这一门课会怎么走
+
+五十三 章、五百多 课，沿着一台真实引擎的骨架往上长。每一课只加几行代码：
+
+```diagram map
+第一部 地基: 造一台发动机, 项目骨架, Rust 的形状, 时间, 主循环, 失败, 配置, 诊断, 可复现
+第二部 平台: 窗口, 事件, 输入, 显示器, 生命周期, 线程, 文件
+第三部 渲染器: 图形 API 选型, 实例与适配器, 设备与队列, 交换链, 第一帧, 缓冲区与顶点, 着色器, 管线
+第四部 渲染架构: 帧图, 资源与句柄, 同步, 阴影, 后处理, 合批与剔除, GPU 数据流, 性能
+第五部 世界: ECS 基础, 查询与调度, 场景, 变换, 资源管线, 序列化, 动画, 物理
+第六部 外壳: 编辑器, 热重载, 平台, 发布, 遥测, 协作
+第七部 收束: 回顾：引擎的形状, 下一台引擎
+```
+
+每一章都会有三样东西：
+
+1. **真实代码**：引用 `prisma-rev` 和 `horizon` 仓库里正在跑的文件，带行号，可以一键跳到 GitHub 看最新版本；
+2. **可运行的实验**：可视化不是配图，是活的；
+3. **一个能落地的小目标**：每课结束时，你的引擎会多出几行真正能用的东西。
+
+代码引用长这样——标题栏里有仓库、文件、行号和当前提交：
+
+```rust ref="prisma:crates/prism-ecs/src/lib.rs#L495-L499"
+struct ComponentPool<T> {
+    dense: Vec<T>,
+    dense_entities: Vec<u32>,
+    sparse: Vec<u32>,
+}
+```
+
+如果作者改了这几行，构建时会警告「缓存副本已过期」，而不是让教程悄悄变成谎言。这一点我们会在第 30 章展开讲。
+
+:::exercise{title="热身：找出你手上代码里的三只时钟"}
+打开任意一个你写过的游戏或图形项目，回答三个问题：
+
+1. 你的更新循环用的是「每帧 dt」还是「固定步长」？
+2. 如果玩家把窗口拖到 5Hz 的显示器上，会发生什么？
+3. 你的渲染线程/设备失败时，主循环知道吗？
+
+三个问题里有两个答不上来，说明这一课对你有用。
+:::
+
+## 下一章
+
+我们会写第一行真正属于引擎的代码：一个窗口、一个交换链、一只固定步长时钟，以及一条「绝不掉进死亡螺旋」的主循环。总共不超过 400 行，但每一行都有它存在的理由。
+
+> 欲知后事如何，且听下回分解：**Hello, Engine**。
