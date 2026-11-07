@@ -1,0 +1,53 @@
+# 第一个包
+
+包是锈语里最小的复用单元。一个包里有一份清单 `Cargo.toml` 和一份到几份源文件。引擎里大到负责渲染的包、小到只管日志的包，都长同一个形状。
+
+## 新建一个库包
+
+在工作区根运行：
+
+```bash
+cargo new crates/window --lib
+```
+
+`--lib` 告诉 `cargo` 这是库包。库包不带入口函数，别人用 `window::` 的方式引用它。二进制包不加 `--lib`，它自带入口。
+
+打开 `crates/window/Cargo.toml`：
+
+```toml
+# 子包清单：名字和根清单的成员名单对上
+[package]
+name = "window"
+version = "0.1.0"
+edition = "2021"
+```
+
+打开 `crates/window/src/lib.rs`：
+
+```rust
+// 库入口：对外公开的名字都从这里往外报
+pub fn title() -> &'static str {
+    "Engine Window" // 返回一个固定标题
+}
+```
+
+`pub` means public，对外可见。放到根的 `src/main.rs` 里这样用：
+
+```rust
+// 二进制包用库包：前缀写包名
+fn main() {
+    println!("{}", window::title()); // 调用 window 包的函数
+}
+```
+
+对照 C++：像头文件里声明、源文件里实现，别人 `#include "window.h"`。对照 C#：像程序集里 `public static class`，别人 `using Window;` 后直接调用。锈语的 `pub` 划分公开和私有，比 `#if` 和访问修饰符都显式。
+
+## 包的边界就是可见性边界
+
+跨包引用只认 `pub`。`window::title` 能被外层看见，`lib.rs` 里没写 `pub` 的函数外层连名字都看不见。边界错了，编译器直接停下来指出行号。
+
+完成标准：根程序能调到 `window::title` 并打印。下一课讲什么时候该把代码拆成新包。
+
+:::exercise{title="动手：加一个私有名字"}
+在 `crates/window/src/lib.rs` 里加一个不写 `pub` 的函数，在 `main.rs` 里试着调用它。运行后看编译器把哪一行拦下来。记住这个错误长什么样，它就是包边界在起作用的证据。
+:::

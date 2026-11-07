@@ -78,8 +78,8 @@ const SPEC: { name: string; note: string; chapters: ChapterSpec[] }[] = [
         lessons: [
           ['安装锈语工具链', 'ready'],
           ['第一个程序', 'ready'],
-          '创建工作区',
-          '第一个包',
+          ['创建工作区', 'ready'],
+          ['第一个包', 'ready'],
           '什么时候该拆包',
           '依赖方向',
           '特性开关',
