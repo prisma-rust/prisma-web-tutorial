@@ -4,35 +4,44 @@
 >
 > ——《借用福音》第一章
 
-很多人以为 Rust 只是「没有 GC 的 C++」。于是他们带着 Unity 的脑子进来，想写一个 `GameObject`，然后被编译器按在地上。
+如果你没写过其他语言，没关系。先认识两个对照：C++ 和 C# 都让对象互相持有、随时改，这在锈语里是被借用检查拦住的。下面用同一个“带位置的对象”在三种语言里写出来，你先看清楚三者的差别，再看为什么换形状。
 
-这不是编译器的脾气问题。**借用检查不是语法糖，它是一条架构约束**：它禁止的东西，会逼你把数据结构改成另一种形状。你后来看到的 ECS、句柄、资源表、命令缓冲、系统调度器——不是谁的设计品味，而是被这条约束一路推出来的必然产物。
-
-这一课不讲怎么用 `Rc<RefCell<T>>` 绕过它。我们讲：**为什么绕过去通常是错的，以及正规解法长什么样。**
-
-## 一个 Unity 片段
-
-先看一段所有人都写过的代码：
+## 对照一：带变换的对象
 
 ```csharp
+// C# —— 对象互持有，GC 管生死
 var go = new GameObject("player");
 go.transform.position = new Vector3(0, 1, 0);
-
 var body = go.AddComponent<Rigidbody>();
 body.mass = 70;
-
-// 任何地方，任何时候
-var t = go.transform;      // 再拿一份引用
-t.position.x += 1;         // 改它
+var t = go.transform; // 再拿一份引用
+t.position.x += 1;    // 随时改
 ```
 
-这段代码能跑，是因为 C# 给了你三样东西：**引用到处传、对象由 GC 管、可变别名随便造**。
+这段代码能跑，是因为 C# 给了你三样东西：**引用到处传、对象由垃圾回收管、可变别名随便造**。`go`、`t`、`body` 同时指向同一块内存，垃圾回收保证对象不会提前死。
 
-`go`、`t`、`body` 同时指向同一块内存，谁都能改。GC 保证对象不会提前死。这就是 Unity 的 GameObject 模型：**对象是一等公民，引用是默认的交互方式**。
+## 对照二：带变换的对象
 
-Rust 三样都不给。
+```cpp
+// C++ —— 手动管生死，同样可以互相持有
+struct Transform { Vector3 position; };
+struct GameObject {
+    Transform* transform; // 裸指针互持，生命周期靠人保证
+    Rigidbody* body;
+};
+// 使用：任何地方都能拿到裸指针并改
+go->transform->position.x += 1;
+```
 
-## `transform.position = ...` 到底做了什么
+C++ 里父子互相指着是常见写法。代价是悬垂指针、双重释放、内存泄漏都要你自己查。锈语把这条路堵死了。
+
+## 锈语里先别硬套
+
+锈语不给上面那两种自由。**借用检查不是语法糖，它是一条架构约束**：它拦住的东西，会逼你把数据结构换成另一种形状。后面看到的实体组件系统、句柄、资源表、命令缓冲、系统调度器，都是被这条约束推着换形状的产物。
+
+这一课不讲怎么绕过去。我们只讲：**绕过去通常错在哪，正规解法长什么样。**
+
+## 改位置字段到底在借什么
 
 把那行代码翻译成 Rust 的语义：
 
@@ -119,7 +128,7 @@ struct Node {
 
 `Rc<RefCell<T>>` 不是解法，是把编译器的枪换成了你自己脚上的枪。
 
-## 句柄与 arena
+## 句柄与内存区
 
 真正的解法是换一个提问方式。
 
@@ -135,43 +144,42 @@ pub struct Entity {
 }
 ```
 
-看 `prism-ecs` 怎么发的：
+看 `prism-ecs` 怎么发的，下面是最小示例：
 
 ```rust ref="prisma:crates/prism-ecs/src/lib.rs#L136-L152"
-    pub fn spawn(&mut self) -> Entity {
-        if let Some(id) = self.free.pop() {
-            // Recycle a freed 槽 销毁 stored the 下一个 generation number
-            // here (old + 1) so a recycled handle is distinguishable from the
-            // stale one that was just freed.
-            let generation = self.entities[id as usize];
-            self.alive[id as usize] = true;
-            self.active[id as usize] = true;
-            Entity { id, generation }
-        } else {
-            let id = self.entities.len() as u32;
-            self.entities.push(0);
-            self.alive.push(true);
-            self.active.push(true);
-            Entity { id, generation: 0 }
-        }
+// 发 Entity：先复用空闲槽，没有再扩容
+pub fn spawn(&mut self) -> Entity {
+    if let Some(id) = self.free.pop() {
+        // 复用回收槽：代号 stored 在 entities 里已经+1
+        let generation = self.entities[id as usize];
+        self.alive[id as usize] = true; // 重新激活这个槽位
+        Entity { id, generation } // 旧句柄的 generation 对不上了，自动失效
+    } else {
+        // 新槽位，generation 固定 0
+        let id = self.entities.len() as u32;
+        self.entities.push(0);
+        self.alive.push(true);
+        Entity { id, generation: 0 }
     }
+}
 ```
 
 注意 `generation`：槽位被回收时，代号加一。于是**旧的句柄自动失效**，不会像 C 的悬垂指针那样悄悄改到别人的数据。这叫「代际句柄」，是 Rust 里替代裸指针的标准手段。
 
 ## 索引取代指针
 
-拿到编号之后，改数据变成这样：
+拿到编号之后，改数据变成这样，下面是最小示例：
 
 ```rust ref="prisma:crates/prism-ecs/src/lib.rs#L218-L225"
-    pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
-        if !self.is_alive(entity) {
-            return None;
-        }
-        self.pools
-            .get_mut(&TypeId::of::<T>())
-            .and_then(|pool| pool_downcast_mut::<T>(pool.as_mut()).get_mut(entity.id))
+// 按 Entity 取可变组件：借整个 World，再按 TypeId 切出池子
+pub fn get_mut<T: Component>(&mut self, entity: Entity) -> Option<&mut T> {
+    if !self.is_alive(entity) {
+        return None; // 死实体直接拦掉，挡住悬垂访问
     }
+    self.pools
+        .get_mut(&TypeId::of::<T>()) // 找到 T 的池子
+        .and_then(|pool| pool_downcast_mut(pool).get_mut(entity.id))
+}
 ```
 
 关键在签名：`&mut self` 借的是**整个 World**，不是某个实体。
@@ -200,22 +208,20 @@ fn movement(world: &mut World, dt: f32) {
 
 ## 借用分裂
 
-`prism-ecs` 里最漂亮的一段，是 `EntityManager`：
-
-```rust
-pub struct EntityManager<'w> {
-    world: &'w mut World,
-}
-```
+`prism-ecs` 里最漂亮的一段，是 `EntityManager`，最小示例：
 
 ```rust ref="prisma:crates/prism-ecs/src/entity_manager.rs#L24-L27"
+// 借用分裂入口：只持有 &mut World，结构修改和查询在类型上互斥
+pub struct EntityManager<'w> {
+    world: &'w mut World, // 'w 是独占借期，期间不能再借 World
+}
 ```
 
 它只有一件事：**把「结构性修改」和「读取」在类型上分开**。你在 `&mut World` 期间不能查询，查询期间不能增删实体。编译器替你守住了这条边界，你就不需要自己写「正在遍历时不要删除」的注释。
 
 而 `query2_mut` 用了 `get_disjoint_mut` 同时拿两个池子——这是**借用分裂**（borrow splitting）的标准写法：一次性把 `&mut` 切成互不重叠的两份，而不是两次独立借用。
 
-## 其他被 Rust 改写的设计
+## 其他被锈语改写的设计
 
 借用只是第一刀。同样的逻辑还发生在别处：
 

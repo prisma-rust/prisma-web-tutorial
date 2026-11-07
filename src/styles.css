@@ -639,6 +639,16 @@ a {
   border-bottom: 1px solid var(--rule);
 }
 
+/* --- 引用块（纯跳转、无代码、无复制按钮） ----------------------------------- */
+
+.ref-card {
+  margin: 1.2em 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
 /* --- 提示框 --------------------------------------------------------------- */
 
 .callout {

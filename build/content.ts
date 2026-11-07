@@ -3,12 +3,12 @@
  *
  * 设计要点：
  * - 浏览器只拿到已经渲染好的 HTML 字符串，不再带 markdown-it / 高亮器。
- * - 代码块可以用 ref="repo:path#L10-L20" 直接引用真实仓库文件。
- * - 本地有 clone 时读真实文件（并检测与缓存副本的漂移）；
- *   没有 clone 时退回 .mdx 里缓存的副本，链接依然指向正确的 GitHub 行号。
+ * - 引用块（ref="repo:path#L10-L20"）仅提供仓库/文件/行号与固定/最新/历史跳转，不承载代码展示。
+ * - 代码块展示教程手写的最小示例代码（含详细中文注释），不与真实文件逐行对应，
+ *   复制按钮只出现在代码块上；引用块无复制按钮。
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 import rehypeSlug from "rehype-slug";
@@ -135,12 +135,6 @@ function resolveRef(spec: string): RefTarget | null {
   return { ...parsed, sha, dirty, online };
 }
 
-function sliceLines(text: string, start?: number, end?: number): string {
-  if (start === undefined) return text.replace(/\s+$/, "");
-  const lines = text.split(/\r?\n/);
-  return lines.slice(start - 1, end ?? start).join("\n").replace(/\s+$/, "");
-}
-
 function esc(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -201,62 +195,71 @@ function parseRanges(spec?: string): Array<[number, number]> {
 
 async function renderFence(opts: FenceOptions): Promise<string> {
   const { lang, code, title, ref, highlight, offset } = opts;
+  if (ref) {
+    return await renderRefFence({ lang, code, title, ref, highlight, offset });
+  }
   const shiki = await highlightHtml(code, lang, offset, highlight);
   const lineCount = code.split('\n').length;
-
   const langChip = `<span class="cb-lang">${esc(lang.toUpperCase())}</span>`;
   let top = "";
-  let path = "";
-
-  if (ref) {
-    const repo = REPOS[ref.repoKey];
-    const range = ref.start ? `L${ref.start}${ref.end && ref.end !== ref.start ? `–L${ref.end}` : ""}` : "";
-    const rev = ref.sha || repo.branch;
-    const pinned = githubUrl(ref.repoKey, ref.file, rev, ref.start, ref.end);
-    const latest = githubUrl(ref.repoKey, ref.file, repo.branch, ref.start, ref.end);
-    const history = `https://github.com/${repo.owner}/${repo.name}/commits/${repo.branch}/${ref.file}`;
-    const repoUrl = `https://github.com/${repo.owner}/${repo.name}`;
-    const note = !ref.online
-      ? `<span class="cb-note" title="构建机上没有这个仓库的 clone，展示的是 .mdx 中缓存的副本">离线副本</span>`
-      : ref.dirty
-        ? `<span class="cb-note" title="本地文件有未提交修改，GitHub 上的版本可能不同">本地有改动</span>`
-        : "";
-
-    // 第一行：仓库、行号、提交；第二行：完整路径。
-    // 路径不在第一行跟仓库抢宽度，长路径就永远不会被省略号吃掉。
-    top =
-      `<a class="cb-repo" href="${repoUrl}" target="_blank" rel="noreferrer">${esc(repo.owner)}/${esc(repo.name)}</a>` +
-      `<span class="cb-meta">${esc(range)}${range ? " · " : ""}@ ${esc(rev)}</span>` +
-      note +
-      `<span class="cb-actions">` +
-      `<a class="cb-btn" href="${pinned}" target="_blank" rel="noreferrer" title="打开当前提交的固定版本">${icon(ICONS.pin, 13)}<span>固定</span></a>` +
-      `<a class="cb-btn" href="${latest}" target="_blank" rel="noreferrer" title="打开默认分支上的最新版本">${icon(ICONS.branch, 13)}<span>最新</span></a>` +
-      `<a class="cb-btn" href="${history}" target="_blank" rel="noreferrer" title="查看这个文件的提交历史">${icon(ICONS.history, 13)}<span>历史</span></a>` +
-      `</span>`;
-    path = `<a class="cb-file" href="${pinned}" target="_blank" rel="noreferrer" title="${esc(ref.file)}">${esc(ref.file)}</a>`;
-  } else if (title) {
-    top = `<span class="cb-file cb-file-inline">${esc(title)}</span>`;
-  }
-
+  if (title) top = `<span class="cb-file cb-file-inline">${esc(title)}</span>`;
   const copy =
     `<button class="cb-copy" data-code="${encodeURIComponent(code)}" type="button">` +
     `${icon(ICONS.copy, 12)}<span class="cb-copy-t">复制</span></button>`;
-
-  const head = path
-    ? `<div class="cb-row cb-row-top">${langChip}${top}</div>` +
-      `<div class="cb-row cb-row-path">${path}${copy}</div>`
-    : `<div class="cb-row cb-row-top">${langChip}${top}${copy}</div>`;
-
+  const head = `<div class="cb-row cb-row-top">${langChip}${top}${copy}</div>`;
   const body = `<div class="cb-body">${shiki}</div>`;
   const wrapped =
     lineCount > 46
       ? `<details class="cb-details">${body}<summary>展开全部 ${lineCount} 行</summary></details>`
       : body;
+  return `<figure class="cb"><figcaption class="cb-head">${head}</figcaption>` + wrapped + `</figure>`;
+}
 
-  return `<figure class="cb${ref ? " cb-ref" : ""}">` +
-    `<figcaption class="cb-head">${head}</figcaption>` +
-    wrapped +
-    `</figure>`;
+async function renderRefFence(opts: FenceOptions): Promise<string> {
+  const { lang, code, ref, highlight } = opts;
+  const repo = REPOS[ref!.repoKey];
+  const range = ref!.start ? `L${ref!.start}${ref!.end && ref!.end !== ref!.start ? `–L${ref!.end}` : ""}` : "";
+  const rev = ref!.sha || repo.branch;
+  const pinned = githubUrl(ref!.repoKey, ref!.file, rev, ref!.start, ref!.end);
+  const latest = githubUrl(ref!.repoKey, ref!.file, repo.branch, ref!.start, ref!.end);
+  const history = `https://github.com/${repo.owner}/${repo.name}/commits/${repo.branch}/${ref!.file}`;
+  const repoUrl = `https://github.com/${repo.owner}/${repo.name}`;
+  const note = !ref!.online
+    ? `<span class="cb-note" title="教程代码为手写最小示例，跳转到 GitHub 看真实完整实现">示例代码</span>`
+    : ref!.dirty
+      ? `<span class="cb-note" title="本地文件有未提交修改，GitHub 上的版本可能不同">本地有改动</span>`
+      : "";
+  const cardHead =
+    `<div class="cb-row cb-row-top">` +
+    `<a class="cb-repo" href="${repoUrl}" target="_blank" rel="noreferrer">${esc(repo.owner)}/${esc(repo.name)}</a>` +
+    `<span class="cb-meta">${esc(range)}${range ? " · " : ""}@ ${esc(rev)}</span>` +
+    note +
+    `<span class="cb-actions">` +
+    `<a class="cb-btn" href="${pinned}" target="_blank" rel="noreferrer" title="打开当前提交的固定版本">${icon(ICONS.pin, 13)}<span>固定</span></a>` +
+    `<a class="cb-btn" href="${latest}" target="_blank" rel="noreferrer" title="打开默认分支上的最新版本">${icon(ICONS.branch, 13)}<span>最新</span></a>` +
+    `<a class="cb-btn" href="${history}" target="_blank" rel="noreferrer" title="查看这个文件的提交历史">${icon(ICONS.history, 13)}<span>历史</span></a>` +
+    `</span></div>` +
+    `<div class="cb-row cb-row-path">` +
+    `<a class="cb-file" href="${pinned}" target="_blank" rel="noreferrer" title="${esc(ref!.file)}">${esc(ref!.file)}</a>` +
+    `</div>`;
+  const card = `<figure class="ref-card"><figcaption class="cb-head">${cardHead}</figcaption></figure>`;
+  const trimmed = code.trim();
+  if (!trimmed) return card;
+  const shiki = await highlightHtml(code, lang, 1, highlight);
+  const langChip = `<span class="cb-lang">${esc(lang.toUpperCase())}</span>`;
+
+  const copy =
+    `<button class="cb-copy" data-code="${encodeURIComponent(code)}" type="button">` +
+    `${icon(ICONS.copy, 12)}<span class="cb-copy-t">复制</span></button>`;
+  const head = `<div class="cb-row cb-row-top">${langChip}${copy}</div>`;
+  const body = `<div class="cb-body">${shiki}</div>`;
+  const lineCount = trimmed.split('\n').length;
+  const wrapped =
+    lineCount > 46
+      ? `<details class="cb-details">${body}<summary>展开全部 ${lineCount} 行</summary></details>`
+      : body;
+  const codeFig = `<figure class="cb"><figcaption class="cb-head">${head}</figcaption>` + wrapped + `</figure>`;
+  return card + codeFig;
 }
 
 
@@ -317,7 +320,7 @@ function remarkCodeBlocks(options: { warnings: string[] }) {
         continue;
       }
       const cached: string = node.value ?? "";
-      let code = cached;
+      const code = cached;
       let offset = 1;
       let target: RefTarget | null = null;
 
@@ -325,21 +328,10 @@ function remarkCodeBlocks(options: { warnings: string[] }) {
         target = resolveRef(attrs.ref);
         if (!target) {
           warnings.push(`${file.path}: 无法解析 ref="${attrs.ref}"`);
-        } else if (target.online) {
-          const full = readFileSync(path.join(REPOS[target.repoKey].local, target.file), "utf8");
-          const real = sliceLines(full, target.start, target.end);
-          if (cached.trim() && real.trim() !== cached.trim()) {
-            warnings.push(
-              `${file.path}: ref="${attrs.ref}" 的缓存副本已过期，已改用真实文件（请更新 .mdx 中的副本内容）`,
-            );
-          }
-          code = real;
-          offset = target.start ?? 1;
-        } else if (!cached.trim()) {
-          warnings.push(
-            `${file.path}: ref="${attrs.ref}" 指向的仓库不在本机，且 .mdx 没有缓存代码，输出为空`,
-          );
         }
+        // 教程代码是手写最小示例，不与真实文件做内容比对，
+        // 引用块仅提供仓库/文件/行号与固定/最新/历史跳转。
+        // 空 body 允许：表示纯引用卡片，不警告。
       }
 
       const html = await renderFence({

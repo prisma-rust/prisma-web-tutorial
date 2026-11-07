@@ -1,0 +1,92 @@
+# 安装锈语工具链
+
+本课把 Rust 工具链从零装好。目标很具体：下一课能直接 `cargo run` 出一个程序。
+
+你不需要会任何语言。本书默认你没写过其他项目，后文每出现 Rust 概念，都会用 C++ 和 C# 的对照说明「你熟悉的写法」和「Rust 的写法」差在哪。
+
+## 三件工具怎么分工
+
+先分清三个名字。
+
+| 名字 | 作用 | 对照 |
+|---|---|---|
+| `rustup` | 工具链管理器。负责装、升级、卸载 Rust 和组件 | C++ 的 `vcpkg` + 编译器安装器 / C# 的 `dotnet` 安装器 |
+| `rustc` | 编译器。把 `.rs` 编成可执行文件 | C++ 的 `g++` / `clang++` / `cl.exe` / C# 的 `csc` / `dotnet build` |
+| `cargo` | 项目和依赖管理器。负责新建、构建、运行、拉依赖 | C++ 的 `CMake` + 包管理器 / C# 的 `dotnet` CLI + NuGet |
+
+你手写代码时只用 `cargo`。`rustc` 会被 `cargo` 在后台调用。`rustup` 只在装和升级时出现。
+
+## 安装工具管理器
+
+需要一个终端。Windows 用 PowerShell，macOS 和 Linux 用自带的 Terminal。
+
+macOS 和 Linux 直接运行官方安装脚本：
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+Windows 用 PowerShell 运行官方安装器：
+
+```powershell
+iwr -useb https://win.rustup.rs.ps1 | iex
+```
+
+安装过程会问你选默认安装：直接按回车接受默认（stable 工具链 + `rustc` + `cargo`）。安装结束后它会提示你重启终端。关掉终端再打开，让 PATH 生效。
+
+PATH 是系统找命令的路径表。`rustup` 会把 `~/.cargo/bin`（Windows 上是 `%USERPROFILE%\.cargo\bin`）加进 PATH。终端重启后，系统才能找到 `rustc` 和 `cargo`。
+
+## 验证安装
+
+开一个新终端，跑这两行：
+
+```bash
+rustc --version
+cargo --version
+```
+
+正常输出长这样：
+
+```text
+rustc 1.85.0 (4eb3f5662 2025-02-17)
+cargo 1.85.0 (834dd83 2025-02-28)
+```
+
+版本号每次发布都会变，只要能打印出 `rustc` 和 `cargo` 并带版本号，就说明装好了。
+
+如果终端报 `command not found` 或 `不是内部或外部命令`，两件事最常见：
+
+1. 没重启终端。PATH 还没刷新。关掉所有终端再开一个。
+2. Windows 上装的是 MSVC 工具链但没装 Visual Studio Build Tools。`rustup` 默认用 MSVC 链接器需要它。装一次「Visual Studio Installer」并勾选「使用 C++ 的桌面开发」即可。C++ 读者可能已经装过 C++ 工具链，这一步直接跳过。
+
+## 升级和卸载
+
+以后升级 Rust，不用重装，直接运行：
+
+```bash
+rustup update
+```
+
+会从网上拉取最新 stable 工具链并替换。卸载对应一条命令：
+
+```bash
+rustup self uninstall
+```
+
+它会清理 `~/.cargo` 和 `~/.rustup` 里的内容。教程项目本身只依赖 `rustc` / `cargo`，不用装 `rust-analyzer`（编辑器插件）也能跑通全部代码，只是写代码时少了补全。
+
+## 没有对照语言你会缺什么
+
+装 Rust 的意义对照一下就清楚了。
+
+C++ 项目通常是：装 Visual Studio 或 `gcc`/`clang`，再配 `CMake`，最后手动管 include 路径和链接参数。换到另一台机器，常要重装一遍同样的链。
+
+C# 项目通常是：装 .NET SDK（自带 `dotnet` 就能新建、构建、运行），`dotnet run` 一行跑起来。
+
+Rust 的 `cargo` 对标的就是 C# 的 `dotnet`：装一次 SDK，后面新建、构建、运行、拉依赖都走它。差别在 `rustc` 是默认可调用的编译器，C++ 那种「装了编译器还要另配构建系统」在 Rust 里合并了。
+
+完成标准：新终端里 `rustc --version` 和 `cargo --version` 都能打印版本号。达成了就去下一课。
+
+:::exercise{title="动手：贴一下你的版本"}
+在新终端里运行 `rustc --version; cargo --version`，把两行输出记下来。后面每一章的代码都按这个工具链写的，版本号对不上或装不上时，先回来重跑 `rustup update` 再继续。
+:::
