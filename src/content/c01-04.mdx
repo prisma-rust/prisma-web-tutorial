@@ -22,11 +22,66 @@
 
 这就是“死亡螺旋”。越努力补时间，欠的越多，直到主循环跑不动。
 
-## 刹车是上限
+## 四仓的刹车长什么样
 
-带上限的表现完全不同。累加器在每帧截断补量，超出时长直接丢弃。丢弃 200 毫秒只等于一次可见卡顿，继续追赶等于整个游戏失去响应。
+`Hazel` 的主循环没有刹车。可变步进直接灌进逻辑，没有上限，没有丢弃。掉一帧就补一帧，补不完就越欠越多，最后整个窗口冻住。
 
-`horizon` 的上限是 10，`prisma-rev` 是 8：
+```cpp
+// Hazel —— 没有刹车，两帧间隔直接灌进逻辑
+void Application::Run()
+{
+    while (m_Running) {
+        float time = Time::GetTime();
+        Timestep timestep = time - m_LastFrameTime; // 两帧间隔直灌
+        m_LastFrameTime = time;
+        for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
+    }
+}
+```
+
+缺点：长掉帧时逻辑被拉长，穿墙和加速是迟早的事。教学品，生产不顶。
+
+`MonoGame` 在 `Game` 的 `DoUpdate` 循环里把上限写死，500 毫秒截一刀：
+
+```csharp
+// MonoGame —— 累加器太长截一刀，补满步数就画
+if (_accumulatedElapsedTime > _maxElapsedTime) // 500 毫秒截一刀
+    _accumulatedElapsedTime = _maxElapsedTime;
+while (_accumulatedElapsedTime >= TargetElapsedTime && !_shouldExit) // 攒满补步
+{
+    _gameTime.TotalGameTime += TargetElapsedTime;
+    _accumulatedElapsedTime -= TargetElapsedTime;
+    DoUpdate(_gameTime);
+}
+```
+
+优点：步长写死，补步有上限，丢弃明码标价。缺点：截断上限 500 毫秒大得很，一次卡死的时间太长；组件按 `UpdateOrder` 排序，不是实体组件系统式解。
+
+`Stride` 在 `GameBase` 的 `accumulatedElapsedGameTime` 里走同样一条路，补步数算完把余数留着：
+
+```csharp
+// Stride —— 攒时长算补步数，余数留着下帧接着用
+accumulatedElapsedGameTime += elapsedAdjustedTime;
+updateCount = (int)(accumulatedElapsedGameTime.Ticks / TargetElapsedTime.Ticks); // 补几步
+accumulatedElapsedGameTime = new TimeSpan(accumulatedElapsedGameTime.Ticks - updateCount * TargetElapsedTime.Ticks); // 余数留着
+```
+
+缺点：逻辑量很大，初学要先啃系统和组件两层，读懂要几步起。
+
+`prisma-rev` 的刹车是 `fixed_steps < 8`，上限写死在循环条件里：
+
+```rust ref="prisma:crates/prism-app/src/app.rs#L1162-L1173"
+// 固定步长循环：整数纳秒时钟，追赶带上限，完整实现点引用块去看
+const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
+let mut fixed_steps = 0;
+while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 { // 上限写死在条件里
+    engine.fixed_update(FIXED_STEP.as_secs_f32(), &self.input); // 跑一步
+    self.fixed_accumulator -= FIXED_STEP; // 用掉一格
+    fixed_steps += 1;
+}
+```
+
+`horizon` 只作功能对齐：它的刹车写死 10，在 `FixedStep::advance` 里夹住：
 
 ```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
 // horizon 上限 10：每帧最多补 10 个 tick，超出直接丢
@@ -34,23 +89,46 @@ let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
 ticks.clamp(0, 10) // 上限写在这一句，完整实现点引用块去看
 ```
 
-```rust ref="prisma:crates/prism-app/src/app.rs#L1162-L1173"
-// prisma-rev 上限 8：整数纳秒时钟，追赶带上限
-while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
-    engine.fixed_update(FIXED_STEP.as_secs_f32(), &self.input); // 跑一步
-    self.fixed_accumulator -= FIXED_STEP; // 用掉一格
-    fixed_steps += 1;
+它告诉你生产为何写死上限：单人引擎上线前必须有一条数字，超了就丢，丢了只剩一次卡顿。
+
+## 四仓的对照表
+
+| 写法 | 步长 | 上限 | 丢弃 | 能复现 | 适合谁 |
+|---|---|---|---|---|---|
+| `Hazel` 可变步进 | 跟着帧走 | 没有 | 没有，直接追 | 否，越追越远 | 先看一眼，作反例 |
+| `MonoGame` 固定步长 | 写死 1/60 | 写死 500 毫秒 | 截掉 | 是 | 传统生产图 |
+| `Stride` 组件时钟 | 写死 | 有，帧跳过 | 留余数 | 是 | 生态大，作架构对照 |
+| `prisma-rev` 固定累加器 | 写死 16 毫秒多 | 写死 8 步 | 丢掉 | 是 | 本教程主线 |
+| `horizon` 虚拟时钟 | 写死 20 步/秒 | 写死 10 | 丢掉 | 是 | 需求方，作功能对齐 |
+
+表上能看：`Hazel` 短但追死自己，`MonoGame` 旧但顶事，`Stride` 全但重，`prisma-rev` 够用且可复现。
+
+## 本课定谁
+
+不是选最简单，选生产级。单人引擎的生产级刹车，我定 `prisma-rev` 的组合：整数纳秒累加器、固定步长、每帧上限写死在循环条件里。
+
+理由有三条。
+
+一是确定性。固定步长写死，输入不决定模拟速度。`Hazel` 那种两帧间隔灌进逻辑的写法，重放第一步就飘了。`MonoGame` 的步长也写死，截断太长，输入多了就卡久。
+
+二是失败隔离。上限就是隔离。超量时间直接丢，丢了只剩一次卡顿。`Hazel` 没有上限，一次长掉帧就进漩涡，线上必现。
+
+三是结构清楚。上限、丢弃、余数各一个名字，查日志能对上。`horizon` 的上限是 10，`prisma-rev` 是 8，数不同，一回事：必须写死。
+
+```rust
+// 本课定案：刹车的样子
+struct Brake {
+    step: Duration, // 步长：固定大小
+    max_steps: u32, // 上限：每帧最多跑几步
 }
 ```
-
-上限写在看得见的地方。数字随硬件和内容调整，约束写法保持一致。
 
 ## 手写最小示例
 
 ```rust
 // 带上限的累加器：超出的时长直接丢弃
 let ticks = timer.advance_game_time(now_ms, |d| d);
-let ticks = ticks.clamp(0, 10); // 上限：最多补 10 个
+let ticks = ticks.clamp(0, 8); // 上限：最多补 8 个
 ```
 
 丢弃的量打不出来也行。关键是规则写在上限那一句，读代码的人一眼看得见。
@@ -73,10 +151,10 @@ while (accumulator >= STEP && n < 8) { // 上限
 g++ main.cpp -o engine && ./engine
 ```
 
-C# 里游戏循环带上限也是一样：
+C# 里 `MonoGame` 式限补也是：
 
 ```csharp
-// C# —— 限帧补：上限写在循环条件里
+// C# —— MonoGame 式限补：上限写在循环条件里
 int n = 0;
 while (accumulator >= Step && n < 8) { // 上限
     Physics.Step(Step);
@@ -89,7 +167,15 @@ while (accumulator >= Step && n < 8) { // 上限
 dotnet run
 ```
 
-两边都把上限写在循环条件里。丢时间直接丢，追时间直接死，通常丢比追值钱。
+C# 里 `Stride` 式是先算补步数再留余数，大写一点的同一套：
+
+```csharp
+// C# —— Stride 式：先算补步数，余数留着
+int updateCount = (int)(accumulated.Ticks / Step.Ticks);
+accumulated -= TimeSpan.FromTicks(updateCount * Step.Ticks);
+```
+
+三边上限都写死。写死才不会追死自己。
 
 :::warn{title="生产级铁律"}
 按真实时间步进的系统必须同时定义每帧步进上限和超限丢弃策略。没有上限的累加器是“定时炸弹”。
@@ -97,8 +183,23 @@ dotnet run
 
 ## 跟着看的结果
 
-这一课验收：你能不看代码复述漩涡的四步，以及上限为什么必须存在。
+这一课验收：你能不看代码复述漩涡的四步，以及上限为什么必须存在。并说出 `MonoGame` 的 500 毫秒、`prisma-rev` 的 8 步各在防什么。
 
 :::exercise{title="动手：把漩涡跑一遍"}
 把入口里的时间改成 25 毫秒一帧，跑一分钟，看步进次数怎么涨。再把上限设成 1，看画面慢一拍但不卡死。两段输出都记下来，上限设成 1 的那段才是你要的样子。
 :::
+
+## 三仓在同一页上
+
+`Hazel` 的 `Application::Run` 是可变步进，没刹车。`horizon` 的 `FixedStep::advance` 是虚拟时钟，刹车写死 10。`prisma-rev` 的 `tick_sim` 是固定累加器，刹车写死 8。本课往下走，只跟第三种。
+
+## 验收对一遍
+
+```text
+[ ] 逻辑只认固定步长
+[ ] 每帧上限看得见
+[ ] 超量时间直接丢
+[ ] 画之前先算
+```
+
+四行打勾，这一课可以往下走了。
