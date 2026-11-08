@@ -2,6 +2,70 @@
 
 上一课装好了 `cargo`。这一课只做一件事：用 `cargo` 新建一个程序，让它打印一句话并跑起来。
 
+## 先把四仓的第一个程序摆上桌面
+
+`Hazel` 的第一个程序在 `Sandbox` 里。`SandboxApp.cpp` 把环境写进字符串，`Hello World` 就这么打印。编一次要先跑 `premake5`，再跑 `make`。慢，但对。
+
+```bash
+# Hazel 第一个程序：先编引擎，再编样例
+premake5 gmake && make -C build/Sandbox -j
+./Sandbox/bin/Debug/Sandbox # 跑样例
+```
+
+`MonoGame` 的第一个程序在 `MonoGame.Framework` 样例工程里。打开就进主循环，更新和绘制都在 `DoUpdate` 和 `DoDraw` 里。
+
+```bash
+# MonoGame 第一个程序：打开就进主循环
+dotnet run --project Samples/Game/Game.csproj
+```
+
+`Stride` 的第一个程序在 `sources/engine/Stride.Engine` 的工程里，组件按序注册，时间给组件。
+
+```bash
+# Stride 第一个程序：工程驱动
+ls sources/engine/Stride.Engine | head # 看引擎在哪个包
+```
+
+`prisma-rev` 的第一个程序在 `projects/prisma` 的二进制里，工作区成员固定，入口在清单里有明文。
+
+```bash
+# prisma-rev 第一个程序：工作区驱动
+cargo run -p prism-app 2>&1 | head
+```
+
+`horizon` 作需求方：游戏入口是 `horizon-client`，只借功能。
+
+## 四仓对照表
+
+| 写法 | 第一个程序在哪 | 装一次什么 | 编一次几步 | 适合谁 |
+|---|---|---|---|---|
+| `Hazel` 样例驱动 | `Sandbox` | `premake5` + 编译 | 两步 | 先看一眼 |
+| `MonoGame` 打开就进 | 框架样例工程 | .NET SDK | 一步 | 传统生产图 |
+| `Stride` 工程驱动 | `Stride.Engine` | SDK + 拉仓 | 三步起 | 生态大，作架构对照 |
+| `prisma-rev` 工作区驱动 | `projects/prisma` | 工具链一次 | 一步 | 本教程主线 |
+| `horizon` 需求对齐 | `horizon-client` | 工具链一次 | 一步 | 需求方 |
+
+表上能看：`Hazel` 两步走，`MonoGame` 打开就进，`Stride` 重，`prisma-rev` 一行跑起来。
+
+## 本课定谁
+
+不是选最简单，选生产级。单人引擎的生产级第一个程序，我定 `prisma-rev` 的工作区驱动：一行跑起来，工作区成员固定。
+
+理由有三条。
+
+一是可运行验收。一行跑起来之后，看输出对不对。开发档对的，发布档也对的。
+
+二是生产级。`MonoGame` 打开就进，但版本负担在 .NET SDK 上。`prisma-rev` 版本负担在清单里，对得上就在。
+
+三是结构清楚。应用层管窗口，引擎层管运行时。查东西从应用层点名，名对得上。
+
+```rust
+// 本课定案：第一个程序的样子
+fn main() {
+    println!("Hello, engine"); // 往标准输出打一行
+}
+```
+
 ## 新建一个项目
 
 打开终端，运行：
@@ -31,7 +95,7 @@ fn main() {
 }
 ```
 
-`println!` 最后那个 `!` 表示它是宏（macro），不是普通函数。宏在编译期展开成代码。C++ 的 `std::cout`、C# 的 `Console.WriteLine` 是运行时函数，Rust 的 `println!` 是编译期展开，格式化在编译期做类型检查。
+`println!` 最后那个 `!` 表示它是宏，不是普通函数。宏在编译期展开成代码。C++ 的 `std::cout`、C# 的 `Console.WriteLine` 是运行时函数，Rust 的 `println!` 是编译期展开，格式化在编译期做类型检查。
 
 ## 运行它
 
@@ -50,14 +114,12 @@ Hello, engine
 
 `target/debug/hello-engine` 就是编译产物（Windows 上带 `.exe`）。C++ 下对应 `g++ main.cpp -o hello && ./hello` 的两步，C# 下对应 `dotnet run` 的一步。Rust 把两步合成了一步，中间产物都放在 `target/` 里。
 
-## 两种语言对照：别人怎么打印一句话
+## 双语对照
 
-放在一起看，三种语言的「最小程序」只差构建方式。
-
-**C++（手写编译）：**
+C++ 第一个程序要手写编译：
 
 ```cpp
-// main.cpp —— 需要 g++ 这类编译器手动编
+// C++ —— 需要 g++ 这类编译器手动编
 #include <iostream> // 输入输出头文件，C++ 靠 #include 拼
 int main() { // 程序入口，返回 0 表示正常退出
     std::cout << "Hello, engine\n"; // 流输出，\n 是换行
@@ -67,17 +129,23 @@ int main() { // 程序入口，返回 0 表示正常退出
 
 构建要手动两步：`g++ main.cpp -o hello` 编译，`./hello` 运行。`#include` 是文本展开，路径错了编译就停。
 
-**C#（dotnet 一步到位）：**
+```bash
+g++ main.cpp -o hello && ./hello
+```
+
+C# 第一个程序是一步到位：
 
 ```csharp
-// Program.cs —— dotnet run 一步跑起来
+// C# —— dotnet run 一步跑起来
 using System; // 命名空间，C# 靠 using 引入
 Console.WriteLine("Hello, engine"); // 标准输出
 ```
 
-`dotnet run` 就做了 `csc` 编译 + 运行两件事，和 `cargo run` 的分工几乎一样。差别是 Rust 的 `println!` 带格式检查，C# 的 `WriteLine` 是重载。
+```bash
+dotnet run
+```
 
-Rust 侧你已经看到的 `println!("Hello, engine")`，括号里是格式化字符串，`{}` 占位会在编译期对参数做类型检查。C++ 的 `std::cout << ...` 把格式抛给了流，C# 的 `Console.WriteLine` 靠方法重载区分。
+Rust 侧你已经看到的 `println!("Hello, engine")`，括号里是格式化字符串，`{}` 占位会在编译期对参数做类型检查。C++ 的 `std::cout << ...` 把格式抛给了流，C# 的 `WriteLine` 靠方法重载区分。
 
 ## 读懂构建命令干了什么
 
@@ -95,4 +163,27 @@ Rust 侧你已经看到的 `println!("Hello, engine")`，括号里是格式化�
 3. 打开 `Cargo.toml`，把 `name = "hello-engine"` 改成别的名字，再 `cargo run`，观察 `target/debug/` 下的新二进制名字。
 :::
 
-完成标准：你能不看教程新建一个项目并跑起来。下一课就用这个骨架长出工作区和第一个引擎 crate。
+完成标准：你能不看教程新建一个项目并跑起来。下一课就用这个骨架长出工作区和第一个引擎包。
+
+## 四仓再对照
+
+`Hazel` 的样例驱动是散的。`MonoGame` 的打开就进是直。`Stride` 的工程驱动是全的。`prisma-rev` 的工作区驱动是一行跑起来。本课往下走，只跟第四种。
+
+## 动手亲手撞一遍
+
+把 `Hazel` 的样例路径走一遍：编样例、跑样例。把 `MonoGame` 的打开路径走一遍：`dotnet run` 进主循环。把 `Stride` 的工程路径走一遍：按序注册系统。把 `prisma-rev` 的工作区路径走一遍：一行跑起来。走四遍，知道用法在纸上的差别。
+
+## 验收单
+
+```text
+[ ] 一行跑起来：cargo run
+[ ] 输出对：Hello, engine
+[ ] 错了先看行号
+[ ] 改名看产物
+```
+
+四行打勾，这一课可以往下走了。
+
+## 下一课
+
+下一课是创建工作区。用这个骨架长出工作区和第一个引擎包。
