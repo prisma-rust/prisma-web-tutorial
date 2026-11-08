@@ -1,25 +1,123 @@
 # 三只时钟
 
-引擎同时维护三只时钟。它们来源不同，用途也不同，混用就会出事。
+引擎同时维护三只时钟。它们来源不同，用途也不同。混起来，行为就会随刷新率飘。
 
-## 三只时钟各管一摊
+## 先定三只时钟的名字
 
-| 时钟 | 来源 | 管谁 | 频率 |
+| 时钟 | 来源 | 管谁 | 频率怎么变 |
 |---|---|---|---|
 | 真实时间 | 系统时钟 | 超时、限帧 | 随机器 |
-| 固定步进 | 累加器切片 | 逻辑、物理 | 固定 |
+| 固定步进 | 累加器按格切 | 物理、人工智能、输入 | 固定 |
 | 显示帧 | 显卡回调 | 渲染、插值 | 随显示器 |
 
-固定步进只认累加器切好的时长。真实时间只负责往累加器里加时长。显示帧只管出画面。
+手写 `帧间隔` 直传物理，在 60 赫兹下刚好，在 144 赫兹下物理加速，掉帧时角色穿墙。根子是把显示帧的抖动带进了逻辑。
 
-对照 C++：像物理用固定步长、渲染用可变步长。对照 C#：像游戏里逻辑用固定更新、画面用渲染帧。Rust把这条线在入口写死。
+## 两仓里时钟怎么分
 
-## 跑一次对照
+`horizon` 有一条虚拟时钟，攒的是真实时间。`prisma-rev` 入口有`固定累加器`，攒的也是真实时间。两边不把帧间隔直接给逻辑。
 
-144 赫兹显示器多出的只是帧数，步进次数不变。掉帧时多出的时长进累加器，累加器有上限的办法在下一课讲。
+`horizon` 切时间的手写最小示例：
 
-完成标准：你能说出任意一个动作走哪只时钟。
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
+// 累加真实时间，切出固定 tick；每帧上限 10，超出丢弃
+let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
+// “刹车片”：每帧最多补 10 个 tick，超出的时长直接丢弃
+ticks.clamp(0, 10) // 完整实现点引用块去看，这行是关键
+```
+
+`prisma-rev` 在入口测时间，累加器攒的那段靠上限截断：
+
+```rust ref="prisma:crates/prism-app/src/app.rs#L1124-L1133"
+// 入口测一次时间，再加进累加器；输入事件不决定模拟速度
+let now = Instant::now(); // 瞬间：现在
+let elapsed = last_frame.map(|p| now.saturating_duration_since(p)).unwrap_or(Duration::ZERO);
+// 真实时间只负责往累加器加时长，累加器按固定步长产出 tick
+```
+
+真实时间只负责往累加器加时长，累加器按固定步长产出 tick。显示帧只管渲染和插值。
+
+## 手写最小示例
+
+```rust
+// 手写版：真实时间往累加器加时长，固定步进产出 tick
+let mut bank: Duration = Duration::ZERO; // 攒着的余数
+bank += elapsed; // 本帧进来多少，先加进去
+while bank >= STEP {
+    world::step(STEP); // 切一格出来干活
+    bank -= STEP; // 用掉一格，剩下的是余数
+}
+```
+
+输入读完就清，逻辑按固定步长，画面按渲染那一步上屏。
+
+## 双语对照
+
+C++ 里同样分三只时钟。逻辑用固定步长，渲染用可变步长：
+
+```cpp
+// C++ —— 逻辑固定步长，渲染可变步长
+void tick() {
+    accumulator += frame_dt; // 真实时间往累加器加
+    while (accumulator >= STEP) {
+        physics::step(STEP); // 固定步长干活
+        accumulator -= STEP;
+    }
+    renderer::draw(alpha); // 画面拿余数插值
+}
+```
+
+```bash
+g++ main.cpp -o engine && ./engine
+```
+
+C# 里逻辑固定更新，画面按渲染帧：
+
+```csharp
+// C# —— 逻辑固定更新，画面按渲染帧
+void Tick() {
+    accumulator += Time.deltaTime; // 真实时间往累加器加
+    while (accumulator >= Step) {
+        Physics.Step(Step); // 固定步长干活
+        accumulator -= Step;
+    }
+    Renderer.Draw(alpha); // 画面插值
+}
+```
+
+```bash
+dotnet run
+```
+
+两边逻辑步长都写死。写死才不会随刷新率飘。
+
+## 插值只为画面
+
+逻辑按固定步长算，画面按显示帧出。中间那格的位置靠插值系数算：
+
+```rust
+// 插值系数：余数占步长的几成，画面拿它去插
+let alpha = bank.as_secs_f32() / STEP.as_secs_f32(); // 0 到 1 之间
+```
+
+`horizon` 里这个系数叫部分 tick：
+
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L420-L423"
+// 部分 tick：余数占步长的几成，相机拿它插值
+pub fn fraction(&self) -> f64 {
+    f64::from(self.timer.game_time_delta_partial_tick(false))
+}
+```
+
+逻辑算一步，画面在两步之间插。插值的数就是余数除以步长。
+
+:::warn{title="生产级铁律"}
+逻辑只认固定步长。哪边越界，画面和逻辑就对不上了。增量只往累加器里加时长。
+:::
+
+## 跟着看的结果
+
+这一课验收：你能把任意一个动作标上走哪只时钟。机器人移动，动画走哪只、物理走哪只、渲染走哪只。
 
 :::exercise{title="动手：给动作标时钟"}
-拿一个机器人移动的动作，把动画、物理、渲染三处分别标上走哪只时钟。再换到高刷新率显示器，想想哪一处会变快。
+拿一个移动的动作，把动画、物理、渲染三处分别标上走哪只时钟。再换到高刷新率显示器，想想哪一处会变快。标错一处，下一课补上。
 :::

@@ -4,23 +4,100 @@
 
 ## 失败先报出来
 
-渲染线程死了，主线程继续自旋会白屏加高占用。检查放在每帧入口：
+`prisma-rev` 主线程每帧只做一件事：先看渲染线程还活着没。渲染线程独占 Vulkan 上下文，初始化失败或者 panic 以后，主线程继续自旋只是白屏加高占用。
 
-```rust
-// 每帧自检：渲染线程死了就返回错误，不自旋空转
-if handle.is_finished() {
-    return Some(shared.take_render_failure().unwrap_or("render thread exited".into()));
+真实代码就是三步。第一步查句柄，第二步把失败原因收出来，第三步返回。正常路径才往下跑模拟：
+
+```rust ref="prisma:crates/prism-app/src/app.rs#L810-L827"
+// 每帧自检：渲染线程死了就返回错误，不继续自旋
+fn tick_frame() {
+    if handle.is_finished() {
+        // 已退出就把失败原因收出来返回，不空转
+        return Some(shared.take_render_failure().unwrap_or("render thread exited".into()));
+    }
+    tick_sim(true); // 然后跑一圈逻辑和提取
 }
 ```
 
-对照 C++：设备丢失走错误码。对照 C#：渲染失败抛异常到顶层。Rust走返回值，调用方必须把失败记到日志或界面上。
+完整实现点引用块去看。`take_render_failure` 是把渲染线程留下的那条消息一次取走，取走之后仓库里就没有了，所以这是报一次就没了，适合拿去弹窗或进日志。
 
-## 失败也要分级
+失败原因落在 `RenderShared` 里的仓库部件：
 
-能恢复的错误继续跑，不能恢复的停下并报原因。报的时候把上下文带上：哪个线程、哪个设备、哪个文件。
+```rust ref="prisma:crates/prism-app/src/render_shared.rs#L334-L344"
+// 失败原因落在仓库里：写入一次，取走一次
+pub fn set_render_failure(&self, message: String) {
+    *self.render_failure.lock().unwrap() = Some(message);
+}
+// 取走后就是空，下次直接报未知的失败
+```
 
-完成标准：你能说出引擎里至少一条失败路径怎么报、怎么停。
+两边对上：渲染线程负责写，主线程一帧查一次。写过一次、查过一次，链就闭上了。
+
+## 先报，再停
+
+失败先报，再停。报的是人话，停的是进程。
+
+```rust
+// 先报：把原因带回去
+// 再停：调用方拿着原因关窗口
+fn tick_frame() -> Option<String> {
+    if handle.is_finished() {
+        return Some(failure); // 把原因带回去
+    }
+    None // 没坏就报没坏，调用方继续跑
+}
+```
+
+对照 C++：设备丢失走错误码，调用方翻译成人话。对照 C#：渲染失败抛到顶层，顶层翻译成人话。Rust 走返回值，调用方必须把失败记到日志或界面上，哪条路都得报。
+
+## 不该报的别报
+
+能恢复的错误记一条继续跑，不能恢复的停下并报原因。报的时候把上下文带上：哪个线程、哪个设备、哪个文件。上下文在这一课是线程名字和设备名字。`horizon` 的主循环也一样，窗口事件递进来先翻译成引擎语义，失败那条同样是走返回值。
+
+:::tip{title="为什么这算生产级"}
+生产代码为失败路径写了处理。教学代码只写快乐路径，生产代码要处理线程退出、设备丢失、显存不足这类少见但必然的路径。
+:::
+
+## 双语对照
+
+C++ 里设备丢失最常见的样子是错误码：
+
+```cpp
+// C++ —— 设备丢失走错误码
+VkResult r = device.waitIdle();
+if (r == VK_ERROR_DEVICE_LOST) {
+    // 先记日志，再报人话
+    log_error("显卡驱动重置，设备已丢失");
+    shutdown(); // 走自己的出口
+}
+```
+
+```bash
+g++ main.cpp -o engine && ./engine
+```
+
+C# 里失败抛到顶层：
+
+```csharp
+// C# —— 渲染失败抛到顶层
+try {
+    Renderer.Draw();
+} catch (Exception ex) {
+    Log.Error("渲染失败：" + ex.Message); // 报人话
+    Exit(); // 走自己的出口
+}
+```
+
+```bash
+dotnet run
+```
+
+三边一样：先报，再停。报要带上下文，停要有出口。
+
+## 跟着看的结果
+
+这一课验收：你能说出引擎里至少一条失败路径怎么报、怎么停。渲染线程死法就是一条。
 
 :::exercise{title="动手：故意让失败露面"}
-故意让渲染线程提前退出，看入口的检查能不能把原因打出来。把那行输出保存下来。
+故意让渲染线程提前退出，看主线程的检查能不能把原因打出来。把那行输出抄下来。再看日志里带没带上下文，线程名字、设备名字都在不在。
 :::
