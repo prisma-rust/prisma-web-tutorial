@@ -12,20 +12,17 @@
 
 手写 `帧间隔` 直传物理，在 60 赫兹下刚好，在 144 赫兹下物理加速，掉帧时角色穿墙。根子是把显示帧的抖动带进了逻辑。
 
-## 两仓里时钟怎么分
+## 四仓的时钟长什么样
 
-`horizon` 有一条虚拟时钟，攒的是真实时间。`prisma-rev` 入口有`固定累加器`，攒的也是真实时间。两边不把帧间隔直接给逻辑。
+`Hazel` 只有一个钟。`Time::GetTime` 是秒单位的浮点时间，`Timestep` 是两帧间隔，只有一个名字。两帧间隔直接灌进逻辑，刷新率一变就飘。
 
-`horizon` 切时间的手写最小示例：
+优点：短，一眼看完。缺点：显示抖动和逻辑抖动不分。按生产标准看，它只有一个钟，丢了三只里两只。
 
-```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
-// 累加真实时间，切出固定 tick；每帧上限 10，超出丢弃
-let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
-// “刹车片”：每帧最多补 10 个 tick，超出的时长直接丢弃
-ticks.clamp(0, 10) // 完整实现点引用块去看，这行是关键
-```
+`MonoGame` 在 `Game` 里把步长写死，`_targetElapsedTime` 是 1/60，`_maxElapsedTime` 是 500 毫秒。攒满切一格，太长截掉。缺点：时间是 `TimeSpan` 整数提克，浮点压力小一些，截断上限 500 毫秒大得很，卡一下会卡很久。
 
-`prisma-rev` 在入口测时间，累加器攒的那段靠上限截断：
+`Stride` 的时钟在 `GameTime` 里。`GameBase` 维护每帧的 `DeltaTime`，组件在 `IGame` 下按 `UpdateOrder` 排序。优点：组件分工清，时间给了每个组件。缺点：工程量大，初学要先啃系统和组件两层。
+
+`prisma-rev` 的时钟是两名。瞬间是 `Instant::now`，时长是 `Duration`。瞬间回答“现在几点”，时长回答“隔了多久”。入口先测瞬间，再算时长进累加器：
 
 ```rust ref="prisma:crates/prism-app/src/app.rs#L1124-L1133"
 // 入口测一次时间，再加进累加器；输入事件不决定模拟速度
@@ -34,7 +31,51 @@ let elapsed = last_frame.map(|p| now.saturating_duration_since(p)).unwrap_or(Dur
 // 真实时间只负责往累加器加时长，累加器按固定步长产出 tick
 ```
 
-真实时间只负责往累加器加时长，累加器按固定步长产出 tick。显示帧只管渲染和插值。
+打分：确定性 4 分（固定步长，输入不决定模拟速度）。失败隔离 4 分（时钟不崩）。线程归属 3 分（时钟本身不拥有上下文）。测试 4 分（喂纳秒看步进数）。
+
+`horizon` 是需求方。它的虚拟时钟把真实时间攒成残差，切整格 tick，余数留着，上限 10：
+
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
+// 累加真实时间，切出固定 tick；每帧上限 10，超出丢弃
+let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
+// “刹车片”：每帧最多补 10 个 tick，超出的时长直接丢弃
+ticks.clamp(0, 10) // 完整实现点引用块去看，这行是关键
+```
+
+它告诉你生产为何要速率管理、冻结、暂停和上限。它的架构不是实体组件系统，数据拼法只作功能对齐。
+
+## 三只时钟的对照表
+
+| 写法 | 时钟数 | 时长类型 | 上限 | 能复现 | 读懂要几步 |
+|---|---|---|---|---|---|
+| `Hazel` 可变步进 | 一只 | 浮点秒 | 没有 | 否，跟着帧变 | 一步 |
+| `MonoGame` 固定步长 | 两只对半 | 整数提克 | 500 毫秒 | 是 | 两步 |
+| `Stride` 组件时钟 | 两只对半 | 浮点妙 | 有，帧跳过 | 是 | 三步 |
+| `prisma-rev` 固定累加器 | 两只对半 | 纳秒时长 | 有，写死 8 | 是 | 两步 |
+| `horizon` 虚拟时钟 | 三只分清 | 毫秒虚拟钟 | 有，写死 10 | 是 | 五步起 |
+
+表上能看：`Hazel` 短但丢了名字，`MonoGame` 旧但顶事，`Stride` 全但重，`prisma-rev` 够用且可复现。
+
+## 本课定谁
+
+不是选最简单，选生产级。单人引擎的生产级时钟，我定 `prisma-rev` 的组合：瞬间和时长分名、固定步长、每帧上限、帧跳过策略写死。
+
+理由有三条。
+
+一是确定性。固定步长写死，输入不决定模拟速度。`Hazel` 那种两帧间隔灌进逻辑的写法，重放第一步就飘了。
+
+二是失败隔离。时钟本身不拥有渲染，崩了不连坐。`MonoGame` 的截断上限 500 毫秒大得很，一次卡死的时间太长。`prisma-rev` 的 8 步上限更稳。
+
+三是结构清楚。累加器、步长、上限各一个名字，查日志能对上。`horizon` 的三样齐全，但要对齐原版，初学先绕开。
+
+```rust
+// 本课定案：时钟的样子
+struct Clock {
+    bank: Duration, // 累加器：攒着的余数
+    step: Duration, // 步长：固定大小
+    max_steps: u32, // 上限：每帧最多跑几步
+}
+```
 
 ## 手写最小示例
 
@@ -48,15 +89,20 @@ while bank >= STEP {
 }
 ```
 
+```rust
+// 插值系数：余数占步长的几成，画面拿它去插
+let alpha = bank.as_secs_f32() / STEP.as_secs_f32(); // 0 到 1 之间
+```
+
 输入读完就清，逻辑按固定步长，画面按渲染那一步上屏。
 
 ## 双语对照
 
-C++ 里同样分三只时钟。逻辑用固定步长，渲染用可变步长：
+C++ 里 `Hazel` 式的可变步进最常见，换成固定步长就多三行：
 
 ```cpp
-// C++ —— 逻辑固定步长，渲染可变步长
-void tick() {
+// C++ —— 从可变步进换成固定步长
+void tick(float frame_dt) {
     accumulator += frame_dt; // 真实时间往累加器加
     while (accumulator >= STEP) {
         physics::step(STEP); // 固定步长干活
@@ -70,17 +116,16 @@ void tick() {
 g++ main.cpp -o engine && ./engine
 ```
 
-C# 里逻辑固定更新，画面按渲染帧：
+C# 里 `MonoGame` 式固定步长两行就是：
 
 ```csharp
-// C# —— 逻辑固定更新，画面按渲染帧
+// C# —— MonoGame 式固定步长：攒、切、上限
 void Tick() {
-    accumulator += Time.deltaTime; // 真实时间往累加器加
+    accumulator += Time.deltaTime;
     while (accumulator >= Step) {
-        Physics.Step(Step); // 固定步长干活
+        Physics.Step(Step);
         accumulator -= Step;
     }
-    Renderer.Draw(alpha); // 画面插值
 }
 ```
 
@@ -88,27 +133,17 @@ void Tick() {
 dotnet run
 ```
 
-两边逻辑步长都写死。写死才不会随刷新率飘。
+C# 里 `Stride` 式是组件时代价，看系统分工：
 
-## 插值只为画面
-
-逻辑按固定步长算，画面按显示帧出。中间那格的位置靠插值系数算：
-
-```rust
-// 插值系数：余数占步长的几成，画面拿它去插
-let alpha = bank.as_secs_f32() / STEP.as_secs_f32(); // 0 到 1 之间
-```
-
-`horizon` 里这个系数叫部分 tick：
-
-```rust ref="horizon:crates/horizon-client/src/clock.rs#L420-L423"
-// 部分 tick：余数占步长的几成，相机拿它插值
-pub fn fraction(&self) -> f64 {
-    f64::from(self.timer.game_time_delta_partial_tick(false))
+```csharp
+// C# —— Stride 式组件系统：按序注册，时间给组件
+public class Game : GameBase // 组件系统入口
+{
+    public override void Update() { /* 组件在方向上分工 */ }
 }
 ```
 
-逻辑算一步，画面在两步之间插。插值的数就是余数除以步长。
+三边步长都写死。写死才不会随刷新率飘。`horizon` 多了速率管理和暂停冻结，`prisma-rev` 多了线程隔离和矩阵传播。初学先拿固定累加器站住，后面再补那两件。
 
 :::warn{title="生产级铁律"}
 逻辑只认固定步长。哪边越界，画面和逻辑就对不上了。增量只往累加器里加时长。
@@ -121,3 +156,26 @@ pub fn fraction(&self) -> f64 {
 :::exercise{title="动手：给动作标时钟"}
 拿一个移动的动作，把动画、物理、渲染三处分别标上走哪只时钟。再换到高刷新率显示器，想想哪一处会变快。标错一处，下一课补上。
 :::
+
+## 四仓生产对照再看一遍
+
+`Hazel` 短但丢了名字，`MonoGame` 旧但顶事，`Stride` 全但重，`prisma-rev` 够用且可复现。`horizon` 在这一课只作功能对齐：三只时钟在它那儿是速率管理器在管的，不在数据拼法里。
+
+## 动手亲手撞一遍
+
+把 `Hazel` 的 `Run` 路径在脑子里走一遍：两帧间隔进逻辑，刷新率一变速度一变。把 `MonoGame` 的 `DoUpdate` 路径走一遍：攒满切一格，太长截掉。把 `Stride` 的组件路径走一遍：按序注册，时间给组件。把 `prisma-rev` 的 `tick_sim` 路径走一遍：入口测时间，累加器攒，步长切，上限夹住。四条路走完，就知道算法和架构在纸上的差别。
+
+## 验收对一遍
+
+```text
+[ ] 逻辑只认固定步长
+[ ] 累加器攒真实时间
+[ ] 每帧上限看得见
+[ ] 画之前先算
+```
+
+四行打勾，这一课可以往下走了。
+
+## 下一课
+
+下一课是死亡螺旋：掉帧之后一直追时间，越追越远。刹车那一步是上限。
