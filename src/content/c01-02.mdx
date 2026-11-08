@@ -10,45 +10,113 @@
 
 验收也只有三条：开着窗口跑十分钟不卡死，步进次数和帧数对得上，关掉窗口干净退出。三条都过，这一圈算闭上了。
 
-## 两仓里这一圈长什么样
+## 三仓的最小一圈
 
-`horizon` 的一圈在游戏主循环里，调的顺序固定。`prisma-rev` 的一圈叫单步模拟与提取提交。两边顺序都一样：先算逻辑，再画。
+`Hazel` 的主循环在 `Application::Run` 里，可变步进直接灌进层栈：
 
-```diagram flow
-读输入 -> 算逻辑 {pill}
-算逻辑 -> 出画面 {pill}
-出画面 -> 读输入 {round}
-```
-
-```rust ref="prisma:crates/prism-app/src/app.rs#L1124-L1174"
-// 单步模拟与提取提交：完整实现点引用块去看
-// 这里手写最小形状：先输入，再逻辑，再出画面
-
-// 1. 输入：帧开始，清空瞬时状态
-input.begin_frame();
-```
-
-tick_frame 本身只做失败检查，然后调单步模拟：
-
-```rust ref="prisma:crates/prism-app/src/app.rs#L810-L830"
-// 每帧自检：渲染线程死了就返回错误，不继续自旋
-fn tick_frame() {
-    if handle.is_finished() {
-        return Some(failure); // 把失败原因带回去
+```cpp
+// Hazel —— 可变步进，一帧走一遍层
+void Application::Run()
+{
+    while (m_Running) // 直到关闭
+    {
+        float time = Time::GetTime();
+        Timestep timestep = time - m_LastFrameTime; // 两帧间隔
+        m_LastFrameTime = time;
+        ExecuteMainThreadQueue();
+        if (!m_Minimized)
+        {
+            for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
+            m_ImGuiLayer->Begin();
+            for (Layer* layer : m_LayerStack) layer->OnImGuiRender();
+            m_ImGuiLayer->End();
+        }
+        m_Window->OnUpdate();
     }
-    tick_sim(true); // 然后跑一圈逻辑和提取
 }
 ```
 
-`horizon` 的入口在 `game.rs`，真正干活的是 `tick` 与 `render_frame`。主循环调一次 `tick` 再调一次 `render_frame`，圈就闭上了。按名查：
+打分：确定性 1 分（刷新率一变就飘）。失败隔离 1 分（层崩了整循环停）。调度层级 2 分（主线程队列、层栈、窗口顺序固定，但步进全在更新一处）。线程归属 1 分（没拆渲染）。测试 1 分（喂时长看不出步进）。
 
-```rust ref="horizon:crates/horizon-client/src/game.rs#L8195-L8210"
-// horizon 游戏侧：tick 与 render_frame 按这个顺序调，完整实现见引用
-// tick：算世界 tick；render_frame：画一帧
-// 一圈只调这两次，顺序固定
+复现 `Hazel` 毛病很简单：60 赫兹速度刚好，144 赫兹快一倍，掉帧穿墙。`Sandbox` 里改两行就撞上。
+
+```bash
+# 复现 Hazel：同一份代码换刷新率看速度
+g++ main.cpp -o sandbox && ./sandbox # 60 赫兹记速度
+# 换 144 赫兹再跑，看快没快
 ```
 
-两边没写错的地方：逻辑在画之前。画之前没算完，这一帧画的就是上一帧的世界。
+`horizon` 的一圈在游戏主循环里，`tick` 与 `render_frame` 按顺序调：
+
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
+// horizon 一圈：先攒时间切 tick，再按 tick 跑逻辑，最后画
+let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
+ticks.clamp(0, 10) // 上限写在这一句，完整实现点引用块去看
+```
+
+打分：确定性 5 分（步长固定，速率管理器定步长）。失败隔离 3 分（时钟不崩，带宽够就一直跑）。调度层级 4 分（世界跑不跑有开关）。线程归属 3 分。测试 5 分（喂毫秒看步进）。
+
+`prisma-rev` 的一圈在 `tick_sim` 里，先攒时间切步进，再跑系统调度，最后传播矩阵：
+
+```rust ref="prisma:crates/prism-app/src/app.rs#L1124-L1174"
+// prism 一圈：整数纳秒累加器，追赶带上限，完整实现点引用块去看
+let now = Instant::now(); // 瞬间：现在
+let elapsed = last_frame.map(|p| now.saturating_duration_since(p)).unwrap_or(Duration::ZERO);
+const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
+let mut fixed_steps = 0;
+while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
+    engine.fixed_update(FIXED_STEP.as_secs_f32(), &self.input); // 跑一步
+    self.fixed_accumulator -= FIXED_STEP; // 用掉一格
+    fixed_steps += 1;
+}
+```
+
+逻辑本身分固定步和可变步两段，矩阵传播在调度末尾：
+
+```rust ref="prisma:crates/prism-engine/src/engine.rs#L429-L472"
+// prism 逻辑：更新跑调度，末尾传播世界矩阵
+pub fn update(&mut self, dt: f32, input_manager: &InputManager) {
+    self.schedule.run(&mut self.world, dt); // 用户与 built-in 系统
+    crate::scene::systems::hierarchy::hierarchy_system(&mut self.world); // 矩阵传播
+}
+```
+
+打分：确定性 4 分（固定步长，输入不决定模拟速度）。失败隔离 5 分（渲染线程独立拥有上下文，主线程查它死了没）。调度层级 5 分（固定步、更新、后期三段）。线程归属 5 分（上下文归渲染线程）。测试 4 分（喂纳秒看步进数）。
+
+## 三选一的对照表
+
+| 写法 | 确定性 | 失败隔离 | 调度层级 | 线程归属 | 测试 | 适合谁 |
+|---|---|---|---|---|---|---|
+| `Hazel` 可变步进 | 差 | 差，同线程连坐 | 差，全在更新 | 差 | 差 | 先看一眼 |
+| `horizon` 速率虚拟时钟 | 好 | 中 | 好，冻结暂停清 | 中 | 好 | 多人对战对齐原版 |
+| `prisma-rev` 固定累加器 | 好 | 好，渲染线程独立 | 好，三段分工 | 好，渲染线程拥有 | 好 | 本教程主线 |
+
+表上能看：`Hazel` 短但跑到线上就飘，`horizon` 牢但绑着原版规格，`prisma-rev` 在线上和教程之间平衡。
+
+## 本课定谁
+
+不是选最简单，选生产级。单人引擎的生产级写法，我定 `prisma-rev` 的组合：整数纳秒累加器、固定步长、每帧上限、固定步与更新分工、矩阵末尾传播。
+
+理由有四条，都对应评价标准。
+
+一是确定性。固定步长加上“输入不决定模拟速度”，重放才能对上。`Hazel` 那种两帧间隔灌进逻辑的写法，重放第一步就飘了。
+
+二是失败隔离。上下文归渲染线程，主线程查它死了没。死了报原因退，不死继续跑。教学代码只写快乐路径，生产代码先写这条。
+
+三是调度层级。固定步管物理，更新管逻辑，后期管画面。各一段，错了能定位到段。`Hazel` 全在 `OnUpdate` 一处，定位只能猜。
+
+四是线程归属。谁拥有谁写死，ownership 清了，锁和通道才有意义。归属没写死的引擎，后面改交换链先崩。
+
+```rust
+// 本课定案：最小闭环的样子
+struct Loop {
+    bank: Duration, // 累加器：攒着的余数
+    step: Duration, // 步长：固定大小
+    max_steps: u32, // 上限：每帧最多跑几步
+}
+```
+
+三行就是全部家当。后面几课都从这三行长出去。
 
 ## 手写最小示例
 
@@ -56,8 +124,20 @@ fn tick_frame() {
 // 一圈入口：读输入 -> 算一帧逻辑 -> 出一帧画面
 fn frame() {
     input::poll(); // 读这一圈的输入
-    world::step(1.0 / 60.0); // 算一帧逻辑，步长固定
+    world::step(STEP); // 算一帧逻辑，步长固定
     render::present(); // 画一帧并上屏
+}
+```
+
+```rust
+// 固定步与更新分工：物理在固定步，逻辑在更新
+fn tick_sim() {
+    while bank >= STEP { // 固定步：物理
+        physics::step(STEP);
+        bank -= STEP;
+    }
+    engine::update(dt); // 更新：游戏逻辑
+    propagate(); // 末尾：矩阵传播
 }
 ```
 
@@ -65,32 +145,39 @@ fn frame() {
 
 ## 双语对照
 
-C++ 里同一圈通常是三个调用连着写：
+C++ 里 `Hazel` 式的可变步进最常见，换成固定步长就多三行：
 
 ```cpp
-// C++ —— 一圈输入、逻辑、画面连着写
-int main() {
-    while (!should_quit) {
-        poll_input(); // 读输入
-        step_physics(1.0f / 60.0f); // 逻辑
-        present(); // 画面
+// C++ —— 从可变步进换成固定步长：攒、切、上限
+void tick(float frame_dt) {
+    accumulator += frame_dt; // 真实时间往累加器加
+    int n = 0;
+    while (accumulator >= STEP && n < 8) { // 上限
+        physics::step(STEP); // 固定步长干活
+        accumulator -= STEP;
+        ++n;
     }
+    renderer::draw(alpha); // 画面拿余数插值
 }
 ```
 
-编译运行：
 ```bash
 g++ main.cpp -o engine && ./engine
 ```
 
-C# 里同样一圈连着写，`dotnet run` 跑起来：
+C# 里逻辑固定更新，画面按渲染帧：
 
 ```csharp
-// C# —— 一圈先输入，后逻辑，再画面
-while (!quit) {
-    Input.Poll(); // 读输入
-    Physics.Step(1f / 60f); // 逻辑
-    Renderer.Present(); // 画面
+// C# —— 逻辑固定更新，画面按渲染帧
+void Tick() {
+    accumulator += Time.deltaTime; // 真实时间往累加器加
+    int n = 0;
+    while (accumulator >= Step && n < 8) { // 上限
+        Physics.Step(Step); // 固定步长干活
+        accumulator -= Step;
+        ++n;
+    }
+    Renderer.Draw(alpha); // 画面插值
 }
 ```
 
@@ -98,7 +185,7 @@ while (!quit) {
 dotnet run
 ```
 
-三边一圈都是三件事。这是从零开始手把手教你的第一靠山：先把圈转起来，再添章节。
+三边步长都写死。写死才不会随刷新率飘。`horizon` 多了速率管理和暂停冻结，`prisma-rev` 多了线程隔离和矩阵传播。初学先拿固定累加器站住，后面再补那两件。
 
 ## 不该往圈里塞的事
 
@@ -115,3 +202,22 @@ dotnet run
 :::exercise{title="动手：数一数一圈"}
 在入口给三件事各加一句打印。跑一次，看三条是否按顺序出现。把顺序和次数抄下来：输入几次、逻辑几次、画面几次。这是后面章节验收的起点。
 :::
+
+## 三仓在同一页上
+
+`Hazel` 的 `Application::Run` 是可变步进，短但飘。`horizon` 的 `FixedStep::advance` 是虚拟时钟，牢但重。`prisma-rev` 的 `tick_sim` 是固定累加器，够用且可复现。本课往下走，只跟第三种。
+
+## 验收对一遍
+
+```text
+[ ] 逻辑只认固定步长
+[ ] 累加器攒真实时间
+[ ] 每帧上限看得见
+[ ] 画之前先算
+```
+
+四行打勾，这一课可以往下走了。
+
+## 下一课
+
+下一课是三只时钟：真实时间、固定步进、显示帧。它们来源不同，用途也不同，混起来就会飘。
