@@ -4,6 +4,71 @@
 
 你不需要会任何语言。本书默认你没写过其他项目，后文每出现 Rust 概念，都会用 C++ 和 C# 的对照说明「你熟悉的写法」和「Rust 的写法」差在哪。
 
+## 先把三仓的工具链摆上桌面
+
+`Hazel` 的工具链在仓库根：`premake5.lua`、`Hazel`、`Hazelnut`、`Sandbox` 四个分工。编一次是跑 `premake5`，再跑 `make`。换台机器要把 `premake5` 和编译器两样都装上。
+
+```bash
+# Hazel 工具链：premake5 再 make
+premake5 gmake && make -C build/Hazel -j # 编引擎
+```
+
+`MonoGame` 的工具链更薄：框架仓的 `MonoGame.Framework` 就是框架，装一次 SDK，`dotnet run` 一行就进主循环。换台机器重装 SDK 就行。
+
+```bash
+# MonoGame 工具链：装 SDK 就行
+dotnet run --project Samples/Game/Game.csproj # 进主循环
+```
+
+`Stride` 的工具链重得很，`sources/engine` 下分 `Stride.Engine`、`Stride.Graphics`、`Stride.Games`。编一次要拉几百个窗，读懂要几步起。
+
+```bash
+# Stride 工具链：拉工程先编
+ls sources/engine/Stride.Engine | head # 看引擎在哪个包
+```
+
+`prisma-rev` 的工具链写在工作区清单里。`Cargo.toml` 根工作区固定成员，`prism-app` 是应用层。只装一次 `cargo`，新建、构建、运行、拉依赖都走它。
+
+```bash
+# prisma-rev 工具链：装一次 cargo
+cargo --version # 装好了就直接用
+```
+
+`horizon` 作需求方：游戏入口是 `horizon-client` 的游戏，工具链不影响本课，只借功能。
+
+## 四仓对照表
+
+| 写法 | 工具链 | 装一次什么 | 编一次要几步 | 适合谁 |
+|---|---|---|---|---|
+| `Hazel` 的 `premake5` | `premake5` + 编译器 | 两样 | 两步 | 先看一眼 |
+| `MonoGame` 的 `dotnet` | .NET SDK | SDK 一次 | 一步 | 传统生产图 |
+| `Stride` 的工程 | `dotnet` + 拉仓 | SDK + 拉仓 | 三步起 | 生态大，作架构对照 |
+| `prisma-rev` 的 `cargo` | 工作区清单 | 工具链一次 | 一步 | 本教程主线 |
+| `horizon` 的清单 | 工作区清单 | 工具链一次 | 一步 | 需求方 |
+
+表上能看：`Hazel` 两步走，`MonoGame` 打开就进，`Stride` 重，`prisma-rev` 一行跑起来。
+
+## 本课定谁
+
+不是选最简单，选生产级。单人引擎的生产级工具链，我定 `prisma-rev` 的清单驱动：装一次 `cargo`，新建、构建、运行都走它。
+
+理由有三条。
+
+一是可运行验收。一行跑起来之后，看输出对不对。开发档对的，发布档也对的。
+
+二是生产级。`MonoGame` 打开就进，但版本负担在 .NET SDK 上。`prisma-rev` 版本负担在 `Cargo.toml` 清单里，版本对得上就在。
+
+三是结构清楚。工作区成员固定，层之间明文。`Hazel` 的根分三容易乱，`Stride` 的系统多容易乱。
+
+```rust
+// 本课定案：工具链的声音
+struct Chain {
+    installer: String, // rustup：装、升级、卸载
+    compiler: String, // rustc：把 .rs 编成可执行文件
+    manager: String, // cargo：新建、构建、运行、拉依赖
+}
+```
+
 ## 三件工具怎么分工
 
 先分清三个名字。
@@ -90,3 +155,13 @@ Rust 的 `cargo` 对标的就是 C# 的 `dotnet`：装一次 SDK，后面新建�
 :::exercise{title="动手：贴一下你的版本"}
 在新终端里运行 `rustc --version; cargo --version`，把两行输出记下来。后面每一章的代码都按这个工具链写的，版本号对不上或装不上时，先回来重跑 `rustup update` 再继续。
 :::
+
+## 四仓再对照
+
+`Hazel` 的工具链是根上分三。`MonoGame` 的工具链是 SDK 一次。`Stride` 的工具链是拉仓三步。`prisma-rev` 的工具链是一行跑起来。本课往下走，只跟第四种。
+
+## 动手把毛病撞出来
+
+把 `PATH` 没刷新的样子撞出来一次：新装完不重启终端直接跑，看它报什么。把报的那一行抄下来。抄完关掉所有终端再开一个，跑通就过。
+
+完成标准：脑子里能不看笔记念出三件工具的活法。
