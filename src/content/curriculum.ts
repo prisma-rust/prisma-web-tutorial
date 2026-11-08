@@ -73,10 +73,10 @@ const SPEC: { name: string; note: string; chapters: ChapterSpec[] }[] = [
       {
         id: 'c02',
         title: '项目骨架',
-        subtitle: '从安装锈语开始，再到工作区与包边界',
+        subtitle: '从安装工具链开始，再到工作区与包边界',
         goal: '零基础也能装好工具链、跑通第一个程序，并让代码有地方放且放对地方。',
         lessons: [
-          ['安装锈语工具链', 'ready'],
+          ['安装工具链', 'ready'],
           ['第一个程序', 'ready'],
           ['创建工作区', 'ready'],
           ['第一个包', 'ready'],
@@ -91,7 +91,7 @@ const SPEC: { name: string; note: string; chapters: ChapterSpec[] }[] = [
       },
       {
         id: 'c03',
-        title: '锈语的形状',
+        title: '借用检查的形状',
         subtitle: '借用检查如何改写引擎架构',
         goal: '接受 Rust 不会让你写出 Unity 的 GameObject，并理解那些替代设计为什么必然出现。',
         lessons: [

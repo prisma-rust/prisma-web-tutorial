@@ -26,7 +26,7 @@ cargo run --features verbose
 println!("多一条日志：tick = 42");
 ```
 
-对照 C++：像 `#if VERBOSE`，宏开关在预处理阶段决定编不编。C# 像预处理符号 `#if VERBOSE`，通过项目里的常量开关。锈语的特性开关在包清单里声明，编译期选支。
+对照 C++：像 `#if VERBOSE`，宏开关在预处理阶段决定编不编。C# 像预处理符号 `#if VERBOSE`，通过项目里的常量开关。Rust的特性开关在包清单里声明，编译期选支。
 
 ## 不该用开关的地方
 

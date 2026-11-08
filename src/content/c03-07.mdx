@@ -10,7 +10,7 @@ use std::cell::RefCell;
 struct Counter { v: RefCell<i32> }
 ```
 
-对照 C++：像mutable 或裸指针改。对照 C#：像引用改属性。锈语把改动做成一次查格子，格子被借时直接报错。
+对照 C++：像mutable 或裸指针改。对照 C#：像引用改属性。Rust把改动做成一次查格子，格子被借时直接报错。
 
 ## 真正要改的不是别用
 
