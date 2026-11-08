@@ -1,19 +1,32 @@
 # 每帧上限
 
-没上限的累加器会把一次卡顿变成死锁。上限是刹车。
+没上限的累加器会把一次卡顿放大成死锁。上限就是刹车。
 
 ## 上限关住补量
 
-```rust
-// 每帧上限：补量再多也不超过上限
-let ticks = timer.advance_game_time(now_ms, |d| d);
-let ticks = ticks.clamp(0, 10); // 上限：最多补 10 个
+`horizon` 的上限是 10，`prisma-rev` 是 8：
+
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
+// horizon 上限 10：每帧最多补 10 个 tick，超出直接丢
+let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
+ticks.clamp(0, 10) // 上限写在这一句
 ```
 
-对照 C++：丢帧限补。对照 C#：限帧补。锈语把上限写在切步进那一句。
+```rust ref="prisma:crates/prism-app/src/app.rs#L1162-L1173"
+// prisma-rev 上限 8：每帧最多跑 8 步，追不上的时长直接丢
+while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
+    engine.fixed_update(FIXED_STEP.as_secs_f32(), &self.input); // 跑一步
+    self.fixed_accumulator -= FIXED_STEP; // 用掉一格
+    fixed_steps += 1;
+}
+```
 
-完成标准：上限数字看得见。
+没有上限时会发生什么，下一课看“死亡螺旋”。现在只记住：上限数字必须看得见。
+
+## 双语对照
+
+C++ 里丢帧限补也是常见做法。C# 里限帧补也是。锈语两仓把上限写在循环条件里，低都看得见。
 
 :::exercise{title="动手：调上限"}
-把上限调小，看画面慢一拍但不卡死。
+把上限调成 1 再跑一遍，看画面慢一拍但不卡死。
 :::

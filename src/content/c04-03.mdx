@@ -1,27 +1,42 @@
 # 累加器
 
-累加器把真实时间攒起来，攒够一格就切一个步进。
+累加器把真实时间攒起来，攒够一格就切一个步进。没它就没法把时刻切成步进。
 
-## 攒满切一格
+## 先攒，再切
 
 ```rust
-// 累加器：真实时间进来，一次切一格步进
-let mut bank: Duration = Duration::ZERO;
-bank += elapsed; // 攒进来
+// 累加器：真实时间进来，攒够一格切一格
+let mut bank: Duration = Duration::ZERO; // 攒着的余数
+bank += elapsed; // 本帧进来多少，先加进去
 while bank >= STEP {
     world::step(STEP); // 切一格出来干活
-    bank -= STEP;
+    bank -= STEP; // 用掉一格，剩下的是余数
 }
 ```
 
-对照 C++：像物理累加器。对照 C#：像游戏循环累加器。锈语把格子大小写成常量，格子大小不随帧变。
+余数留在里面，下帧继续用。余数丢了，时间就断了。两仓的真实循环长这样，下面看引用块。
 
-## 余数留在里面
+`prisma-rev` 入口先测时间再加进累加器：
 
-没切完的余数留在累加器里，下帧继续用。余数丢了，时间就断了。
+```rust ref="prisma:crates/prism-app/src/app.rs#L1124-L1133"
+// 入口先测时间，再加进累加器；输入事件不决定模拟速度
+let now = Instant::now();
+let elapsed = last_frame.map(|p| now.saturating_duration_since(p)).unwrap_or(Duration::ZERO);
+// 累加器攒的那段只多不少，超量时长靠上限截断，见下一课
+```
 
-完成标准：你能说出累加器进、出、余各是什么。
+`horizon` 里攒的叫残差，名字不同，一回事：
+
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L47-L60"
+// 残差攒时间，整格切走，剩下的是残差
+let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
+// 完整切法见引用跳转：残差切整格，余数留着
+```
+
+## 双语对照
+
+C++ 里物理累加器也是先攒后切，格子大小写死常量。C# 里游戏循环累加器一样，步长常量。两边都有余数留着的规矩，丢余数的代码两边都是错的。
 
 :::exercise{title="动手：看余数"}
-给累加器加一句打印余数，跑一遍，看它怎么涨跌。
+给累加器加一句打余数，跑一分钟，看它怎么在格子大小里跳。
 :::

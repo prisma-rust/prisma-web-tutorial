@@ -1,24 +1,56 @@
 # 时长与瞬间
 
-时长是一段长短，瞬间是一个时刻。两个名字分开，代码才不混。
+这一课先分名字。时钟代码里只有两个类型，分不清就会把时刻当成时长去算。
 
-## 两个名字
+## 两个类型
 
 ```rust
-// 时长是一段长短，瞬间是一个时刻
+// 时长是一段长短，瞬间是一个时刻，两者不能互相代
 use std::time::{Duration, Instant};
-let start = Instant::now(); // 瞬间：现在
-let span: Duration = std::time::Duration::from_millis(16); // 时长：16 毫秒
+let start = Instant::now(); // 瞬间：现在这一刻
+let span = Duration::from_millis(16); // 时长：16 毫秒
+// 下面的事分得清：时刻比大小，时长能加能减
+let _ = start + span; // 时刻加时长，得到新的时刻，能写
+// let _ = start + start; // 时刻加时刻，编译不过——类型在拦你
 ```
 
-对照 C++：像 `steady_clock` 的时间点和持续时间。对照 C#：像 `DateTime` 和 `TimeSpan`。锈语把名字分开，类型直接告诉你能加不能减。
+为什么要分开。时刻回答“现在几点”，时长回答“隔了多久”。拿时刻去做时长的事，编译器直接停下来，错误就写在行号上。
 
-## 瞬间只看前后
+## horizon 和 prisma-rev 在哪分
 
-瞬间比大小只看谁在前。时长能加能减。拿瞬间去做时长的事，编译器拦住。
+两仓从时钟的结构上就分开。`horizon` 的虚拟时钟攒的是 `Duration`，一步到位的切法在 `FixedStep` 里：
 
-完成标准：你能分清这段是时长还是瞬间。
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
+// 累加真实时间，切出固定 tick；每帧上限 10，超出丢弃
+let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
+// “刹车片”：每帧最多补 10 个 tick，超出的时长直接丢弃
+ticks.clamp(0, 10) // 防死亡螺旋的关键行，完整实现见引用跳转
+```
 
-:::exercise{title="动手：改名试试"}
-把一个变量从时长改名成瞬间，看类型检查拦哪一行。把这行记下来。
+`prisma-rev` 在入口测时间，用的也是单调时钟，见下面引用块的 `Instant::now()`。
+
+## 双语对照
+
+C++ 里分时间点和持续时间，头文件不同：
+
+```cpp
+// C++ —— 时间点和持续时间分开
+auto t0 = std::chrono::steady_clock::now(); // 时间点
+auto span = std::chrono::milliseconds(16);  // 持续时间
+auto t1 = t0 + span; // 时间点加持续时间，得到新时间点
+```
+
+C# 里也分：
+
+```csharp
+// C# —— 日期时间和时间间隔分开
+var t0 = DateTime.Now; // 日期时间
+var span = TimeSpan.FromMilliseconds(16); // 时间间隔
+var t1 = t0 + span; // 日期时间加时间间隔
+```
+
+两边都是时刻和时长分开，名字不同，样子一样。
+
+:::exercise{title="动手：故意分错"}
+把时刻写进时长变量里，看编译器报哪一行。报完了再改回来。
 :::

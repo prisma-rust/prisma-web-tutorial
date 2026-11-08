@@ -4,14 +4,28 @@
 
 ## 冻住再开
 
-```rust
-// 暂停：累加器不进时长
-if paused { /* 本帧不攒时长 */ }
+`horizon` 暂停是残差冻住：
+
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L436-L441"
+// 暂停：残差冻住，画面还继续，不攒新时长
+pub fn end_frame(&mut self, pause: bool) {
+    self.pause = pause;
+    self.timer.update_pause_state(pause);
+}
 ```
 
-升速就是一帧切好几格。暂停在入口就能做。
+`prisma-rev` 编辑态直接跳过模拟：
 
-完成标准：暂停时步进停，画面还在。
+```rust ref="prisma:crates/prism-app/src/app.rs#L1122-L1124"
+// simulate 为假时只传播层级，不跑游戏系统——编辑态的暂停
+fn tick_sim(&mut self, simulate: bool) { /* simulate 假时跳过系统 */ }
+```
+
+暂停在入口就能做，画面不冻，逻辑不走。升速就是一帧切好几格。
+
+## 双语对照
+
+C++ 里暂停冻累加器。C# 里暂停冻逻辑。锈语把暂停写在累加器那一侧。
 
 :::exercise{title="动手：暂停一次"}
 加暂停键，按一次画面冻住逻辑，按另一次继续。

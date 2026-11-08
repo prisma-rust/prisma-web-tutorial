@@ -5,14 +5,25 @@
 ## 没对齐就插值
 
 ```rust
-// 插值系数：余数占步长的几成
-let alpha = bank.as_secs_f32() / STEP.as_secs_f32();
+// 插值系数：余数占步长的几成，画面拿它去插
+let alpha = bank.as_secs_f32() / STEP.as_secs_f32(); // 0 到 1 之间的小数
 ```
 
-对照 C++：渲染插值。对照 C#：渲染插值。锈语把系数算成一个 0 到 1 的数。
+`horizon` 里这个系数叫部分 tick：
 
-完成标准：系数对得上余数和步长。
+```rust ref="horizon:crates/horizon-client/src/clock.rs#L420-L423"
+// 部分 tick：余数占步长的几成，相机拿它插值
+pub fn fraction(&self) -> f64 {
+    f64::from(self.timer.game_time_delta_partial_tick(false))
+}
+```
 
-:::exercise{title="动手：改系数"}
+逻辑算一步，画面在两步之间插。插值的数就是余数除以步长。
+
+## 双语对照
+
+C++ 里渲染插值也是这一个系数。C# 里渲染插值也是。锈语把系数算成一个 0 到 1 的数，渲染拿它。
+
+:::exercise{title="动手：关掉插值"}
 把插值关掉，看画面抖不抖。把系数打出来看它在 0 到 1 里跳。
 :::

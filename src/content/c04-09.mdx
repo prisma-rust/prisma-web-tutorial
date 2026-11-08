@@ -8,15 +8,19 @@
 // 给时钟写测试：喂固定时长，看切出几格
 #[test]
 fn step_counts() {
-    let mut timer = Timer::new();
-    assert_eq!(timer.advance(Duration::from_millis(16)), 1);
+    let mut timer = Timer::new(60.0, 0); // 60 步每秒
+    assert_eq!(timer.advance(Duration::from_millis(16)), 1); // 喂一格切一格
 }
 ```
 
-对照 C++：给物理写单测。对照 C#：给时钟写单测。锈语测试和代码放一起写。
+对照 C++：给物理写单测。对照 C#：给时钟写单测。锈语测试和代码放一起写，喂的都是时长数字。
+
+## 两仓怎么测
+
+`horizon` 测步进数时喂的是毫秒。`prisma-rev` 测固定步长时喂的是纳秒常量。两边喂的都是时长数字，结果都是步进数。
 
 完成标准：步进数在测试里写死。
 
 :::exercise{title="动手：跑一次测试"}
-跑一次测试，看它绿了。再改步长，看它红在哪。
+跑一次测试，看它绿了。再改步长，看它红在哪。红的那一行就是步进数。
 :::

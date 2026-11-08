@@ -1,18 +1,34 @@
 # 固定步长
 
-固定步长把逻辑速度写死。步长不变，行为就不随刷新率飘。
+步长是逻辑的心跳。步长不变，行为就不随刷新率飘。
 
-## 步长常量
+## 步长写死常量
 
 ```rust
-// 步长常量：物理只认它，不认帧间隔
-const STEP: Duration = Duration::from_millis(16); // 约 60 步每秒
+// 固定步长：物理只认这个数，不认帧间隔
+const STEP: Duration = Duration::from_nanos(16_666_667); // 约 60 步每秒
 ```
 
-对照 C++：物理固定步长。对照 C#：逻辑固定步长。锈语把步长做成编译期常量，改步长要改代码。
+`prisma-rev` 用的就是这个数，入口循环里也是这个常量：
 
-完成标准：步长在代码里看得见，改它就改速度。
+```rust ref="prisma:crates/prism-app/src/app.rs#L1162-L1173"
+// 固定步长循环：整数纳秒时钟，追赶带上限；完整切法见引用跳转
+const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
+let mut fixed_steps = 0;
+while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
+    // 物理走固定步：结果在下一帧 update 里传播成世界矩阵
+    engine.fixed_update(FIXED_STEP.as_secs_f32(), &self.input);
+    self.fixed_accumulator -= FIXED_STEP;
+    fixed_steps += 1;
+}
+```
+
+`horizon` 用的是每秒 20 步。数不同，一回事：步长写死。
+
+## 双语对照
+
+C++ 里物理固定步长也是写死常量。C# 里逻辑固定步长也是。改步长就是改速度，写在常量里谁都看得见。
 
 :::exercise{title="动手：改步长"}
-把步长从 16 毫秒改成 8 毫秒，看画面和逻辑怎么变。改回来。
+把步长从 16.6 毫秒改成 8.3 毫秒，跑一遍，看逻辑快一倍没。改回来。
 :::
