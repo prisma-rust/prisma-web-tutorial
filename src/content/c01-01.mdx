@@ -4,11 +4,11 @@
 
 ## 先定评价标准
 
-本课不按“最简单好写”选。按工业生产级选，维度只有五个：确定性、失败隔离、调度层级、线程归属、可测试性。每一仓按这五条打分。
+本课不按“最简单好写”选。按工业生产级选，维度只有五个：确定性、失败隔离、调度层级、线程归属、可测试性。`horizon` 仓由于不是实体组件系统架构，只作功能需求方参考：它告诉你引擎要做什么，不告诉你数据怎么摆。本课架构选型只看四仓里的实体组件系统式实现。
 
 > 确定性：同样的输入能不能得同样的输出。失败隔离：一个线程崩能不能带倒整个进程。调度层级：步进、更新、后期各管哪一段。线程归属：谁拥有渲染上下文。测试：能不能喂固定时长看步进数。
 
-## 三仓的最小一圈
+## 四仓的最小一圈
 
 `Hazel` 的主循环在 `Application::Run` 里：
 
@@ -21,23 +21,28 @@ void Application::Run()
         float time = Time::GetTime();
         Timestep timestep = time - m_LastFrameTime; // 两帧间隔
         m_LastFrameTime = time;
-        for (Layer* layer : m_LayerStack)
-            layer->OnUpdate(timestep); // 可变步进直接灌进逻辑
+        for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep); // 可变步进直接灌进逻辑
     }
 }
 ```
 
-打分：确定性 1 分（刷新率一变行为跟着变）。失败隔离 1 分（渲染和逻辑同线程，崩了全停）。调度层级 1 分（全在 `OnUpdate` 一处）。线程归属 1 分（上下文归谁没写死）。测试 1 分（喂时长看不出步进数）。
+### 优点
 
-复现 `Hazel` 的毛病很简单：在 60 赫兹上速度刚好，换 144 赫兹快一倍，加一帧 40 毫秒直接穿墙。`Sandbox` 里改两行就撞上。
+短，一眼看完。层栈加上几层只多几行。教学和启动最快。
+
+### 缺点
+
+步进跟着帧走，换 60 赫兹和 144 赫兹速度差一倍。没有上限和丢弃，长掉帧直接进“死亡螺旋”。同线程跑渲染和逻辑，崩了全停。按生产标准，这是教学品，不是线上品。
+
+复现很简单：在 60 赫兹上速度刚好，换 144 赫兹快一倍，给一帧加 40 毫秒直接穿墙。
 
 ```bash
 # 复现 Hazel 毛病：同一份代码换刷新率看速度
-g++ main.cpp -o sandbox && ./sandbox # 60 赫兹先记速度
+g++ main.cpp -o sandbox && ./sandbox # 60 赫兹记速度
 # 换 144 赫兹再跑一次，看速度涨没涨
 ```
 
-`horizon` 的时钟在 `horizon-client` 的 `clock.rs` 里。真实时间攒进虚拟时钟，切整格 tick，余数留着：
+`horizon` 是功能需求方。它的时钟在 `horizon-client` 的 `clock.rs` 里：
 
 ```rust ref="horizon:crates/horizon-client/src/clock.rs#L393-L413"
 // 累加真实时间，切出固定 tick；每帧上限 10，超出丢弃
@@ -46,26 +51,34 @@ let ticks = timer.advance_game_time(now_ms, |d| d.max(mspt));
 ticks.clamp(0, 10) // 完整实现点引用块去看，这行是关键
 ```
 
-打分：确定性 5 分（步长固定，速率管理器决定步长）。失败隔离 3 分（时钟本身不崩，带宽够就一直跑）。调度层级 5 分（世界跑不跑、冻结、暂停各有开关）。线程归属 3 分（时钟不拥有上下文）。测试 5 分（喂毫秒看步进数）。
+它告诉你生产为何要速率管理、冻结、暂停和上限：服务器节拍是事儿，客户端画面是另事儿。它的架构不是实体组件系统，数据拼法不在本教程学范围内。
 
-```rust ref="horizon:crates/horizon-client/src/clock.rs#L434-L441"
-// 暂停和冻结在时钟里是对偶的两个开关
-pub fn end_frame(&mut self, pause: bool) {
-    self.pause = pause; // 画面暂停时残差冻住
-    self.timer.update_pause_state(pause);
-}
+`MonoGame` 在 `Game` 里把固定步长写死， accumulator 攒满切一格，太长的一帧直接截掉：
+
+```csharp
+// MonoGame —— 固定步长写死，太长截掉
+// _isFixedTimeStep = true; _targetElapsedTime = 1/60; _maxElapsedTime = 500ms
+// 攒够一格就 DoUpdate 一次，超出一截就丢
 ```
 
-> 暂停是画面说了算，冻结是世界说了算。关系搞反了，暂停时屏幕还在动，冻结时画面还在算。
+打分上看，它比 `Hazel` 像生产品：步长写死，截断上限明码标价。缺点是代码是旧的 XNA 风格，组件按 `UpdateOrder` 排序，不算实体组件系统式解，线程还绑主线程。
 
-`prisma-rev` 的主循环在 `prism-app` 的 `tick_sim` 里。整数纳秒时钟，追赶带上限：
+`Stride` 在 `GameBase` 里走组件系统：`Game` 继承 `GameBase`，组件按顺序注册，`GameTime` 给步长。片段看它的接口：
+
+```csharp
+// Stride —— 组件系统：Game继承GameBase，组件按顺序注册
+public class Game : GameBase, ISceneRendererContext, IGameSettingsService
+```
+
+缺点是工程量很大，读懂要几步起，且是 C# 生态里讨论最多的那款。教程用它作架构对照，不用它作主线：语言不对、版本负担高。
+
+`prisma-rev` 在 `tick_sim` 里走整数纳秒累加器，追赶带上限：
 
 ```rust ref="prisma:crates/prism-app/src/app.rs#L1124-L1174"
 // 单步模拟与提取提交：整数纳秒时钟，追赶带上限，完整实现点引用块去看
 // 先测时间，再加累加器；输入事件不决定模拟速度
 let now = Instant::now(); // 瞬间：现在
 let elapsed = last_frame.map(|p| now.saturating_duration_since(p)).unwrap_or(Duration::ZERO);
-// 固定步长循环：整数纳秒时钟，追赶带上限
 const FIXED_STEP: Duration = Duration::from_nanos(16_666_667);
 let mut fixed_steps = 0;
 while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
@@ -74,8 +87,6 @@ while self.fixed_accumulator >= FIXED_STEP && fixed_steps < 8 {
     fixed_steps += 1;
 }
 ```
-
-打分：确定性 4 分（固定步长，输入不决定模拟速度）。失败隔离 5 分（渲染线程独立拥有上下文，主线程自检）。调度层级 4 分（固定步、更新、后期各一段）。线程归属 5 分（上下文归渲染线程）。测试 4 分（喂纳秒看步进数）。
 
 主循环失败隔离长这样：
 
@@ -89,19 +100,31 @@ fn tick_frame() {
 }
 ```
 
-## 三选一的对照表
+逻辑本身分固定步和可变步两段，矩阵传播在调度末尾：
 
-| 写法 | 确定性 | 失败隔离 | 调度层级 | 线程归属 | 测试 | 适合谁 |
+```rust ref="prisma:crates/prism-engine/src/engine.rs#L429-L472"
+// prisma 逻辑：更新跑调度，末尾传播世界矩阵
+pub fn update(&mut self, dt: f32, input_manager: &InputManager) {
+    self.schedule.run(&mut self.world, dt); // 用户与 built-in 系统
+    crate::scene::systems::hierarchy::hierarchy_system(&mut self.world); // 矩阵传播
+}
+```
+
+## 四仓对照表
+
+| 写法 | 确定性 | 失败隔离 | 调度层级 | 线程归属 | 测试 | 结论 |
 |---|---|---|---|---|---|---|
-| `Hazel` 可变步进 | 差，跟着帧走 | 差，同线程连坐 | 差，全在一处 | 差，没写死 | 差，看不出步进 | 先看一眼 |
-| `horizon` 虚拟时钟 | 好，速率管理器 | 中，时钟不崩 | 好，冻结暂停清 | 中，不拥有上下文 | 好，喂毫秒 | 多人对战 |
-| `prisma-rev` 固定累加器 | 好，固定步长 | 好，渲染线程独立 | 好，三段分工 | 好，渲染线程拥有 | 好，喂纳秒 | 本教程主线 |
+| `Hazel` 可变步进 | 差，跟着帧走 | 差，同线程连坐 | 差，全在更新一处 | 差，没写死 | 差 | 教学品，作反例 |
+| `horizon` 虚拟时钟 | 好，速率管理器 | 中，不崩 | 好，冻结暂停清 | 中 | 好，喂毫秒 | 需求方，作功能对齐 |
+| `MonoGame` 固定步长 | 好，步长写死 | 中，截断后免转 | 中，组件排序 | 差，绑主线程 | 好 | 传统生产图，作步长对照 |
+| `Stride` 组件系统 | 好，组件分工 | 中，系统多 | 好，排序可控 | 中，层数多 | 中 | 生态大，作架构对照 |
+| `prisma-rev` 固定累加器 | 好，输入不决定模拟速度 | 好，渲染线程独立 | 好，三段分工 | 好，渲染线程拥有 | 好，喂纳秒 | 本教程主线 |
 
-表上能看：`Hazel` 短但跑到线上就飘，`horizon` 牢但绑着原版规格，`prisma-rev` 在线上和教程之间平衡。
+表上能看：`Hazel` 短但跑到线上就飘，`horizon` 牢但绑定原版规格，`prisma-rev` 既把步进写死、又把线程归属写死。`MonoGame` 和 `Stride` 帮你看清“生产”两个字的代价。
 
 ## 本课定谁
 
-不是选最简单，选生产级。单人引擎的生产级写法，我定 `prisma-rev` 的组合：整数纳秒时钟、固定步长、每帧上限、渲染线程独立拥有上下文、固定步/更新/后期三段。
+不是选最简单，选生产级。单人引擎的生产级写法，我定 `prisma-rev` 的组合：整数纳秒时钟、固定步长、每帧上限、渲染线程独立拥有上下文、固定步与更新分工、矩阵末尾传播。
 
 理由有四条，都对应评价标准。
 
@@ -111,7 +134,7 @@ fn tick_frame() {
 
 三是调度层级。固定步管物理，更新管逻辑，后期管画面。各一段，错了能定位到段。`Hazel` 全在 `OnUpdate` 一处，定位只能猜。
 
-四是线程归属。谁拥有谁写死， ownership 清了，锁和通道才有意义。归属没写死的引擎，后面改交换链先崩。
+四是线程归属。谁拥有谁写死，ownership 清了，锁和通道才有意义。归属没写死的引擎，后面改交换链先崩。
 
 ```rust
 // 本课定案：工业级时钟的样子
@@ -146,7 +169,7 @@ let ticks = ticks.clamp(0, 8); // 上限在看得见的地方
 
 ## 双语对照
 
-C++ 里 `Hazel` 的同功能写法就是可变步进。到了教程这里，直接换成固定步长：
+C++ 里 `Hazel` 式的可变步进最常见，换成固定步长就多三行：
 
 ```cpp
 // C++ —— 从 Hazel 的可变步进换成固定步长
@@ -164,17 +187,16 @@ void tick(float frame_dt) {
 g++ main.cpp -o engine && ./engine
 ```
 
-C# 里逻辑固定更新，画面按渲染帧：
+C# 里 `MonoGame` 式固定步长两行就是：
 
 ```csharp
-// C# —— 逻辑固定更新，画面按渲染帧
+// C# —— MonoGame 式固定步长：攒、切、上限
 void Tick() {
-    accumulator += Time.deltaTime; // 真实时间往累加器加
+    accumulator += Time.deltaTime;
     while (accumulator >= Step) {
-        Physics.Step(Step); // 固定步长干活
+        Physics.Step(Step);
         accumulator -= Step;
     }
-    Renderer.Draw(alpha); // 画面插值
 }
 ```
 
@@ -182,19 +204,11 @@ void Tick() {
 dotnet run
 ```
 
-三边步长都写死。写死才不会随刷新率飘。
-
-## “死亡螺旋”先长在上限那
-
-掉帧时如果一直追时间，越追越远。刹车那一步是上限。累加器攒多少、补多少、丢多少，后面几课细讲。
-
-:::warn{title="先这样记住"}
-增量只往累加器里加时长。逻辑只认固定步长。哪边越界，画面和逻辑就对不上了。
-:::
+三边步长都写死。写死才不会随刷新率飘。`horizon` 多了速率管理和暂停冻结，`prisma-rev` 多了线程隔离和矩阵传播。初学先拿固定累加器站住，后面再补那两件。
 
 ## 跟着看的结果
 
-这一课验收只有一个：你能说出为什么教程选了 `prisma-rev` 的写法，不选 `Hazel` 的可变步进，也不先啃 `horizon` 的虚拟时钟，以及这三仓在确定性、失败隔离、调度层级、线程归属上各差哪儿。
+这一课验收只有一个：你能说出为什么教程选了 `prisma-rev` 的写法，不选 `Hazel` 的可变步进，也不先啃 `horizon` 的虚拟时钟，并说出 `MonoGame`、`Stride` 各差哪儿。
 
 验收单只有四行，照着念就行：
 
@@ -205,23 +219,8 @@ dotnet run
 4. 画之前先算，顺序定死。
 ```
 
-四行对上了，这一课算过。下一课分名字：时长是一段长短，瞬间是一个时刻。分开，代码才不混。按名字查`固定累加器`，就是本章后面几课的活。
+四行对上了，这一课算过。下一课是三只时钟。
 
 :::exercise{title="动手：亲手撞上毛病"}
-打开任意一个演示，把刷新率从 60 改成 144，看移动速度涨没涨。再给一帧故意加 40 毫秒延迟，看角色穿墙没穿墙。记下三个时间点：60 赫兹、144 赫兹、掉帧。涨了，你就亲手撞上了这个毛病。改回来。把 60 赫兹的速度和 144 赫兹的速度各记一个数，差值就是可变步进的飘量。
+打开任意一个演示，把刷新率从 60 改成 144，看移动速度涨没涨。再给一帧故意加 40 毫秒延迟，看角色穿墙没穿墙。记下三个时间点：60 赫兹、144 赫兹、掉帧。涨了，你就亲手撞上了这个毛病。改回来。
 :::
-
-## 三仓在同一页上
-
-`Hazel` 的 `Application::Run` 是可变步进，短但飘。`horizon` 的 `FixedStep::advance` 是虚拟时钟，牢但重。`prisma-rev` 的 `tick_sim` 是固定累加器，够用且可复现。本课往下走，只跟第三种。
-
-## 验收对一遍
-
-```text
-[ ] 逻辑只认固定步长
-[ ] 累加器攒真实时间
-[ ] 每帧上限看得见
-[ ] 画之前先算
-```
-
-四行打勾，这一课可以往下走了。
