@@ -26,6 +26,42 @@
 
 第六段外壳是门。引擎之外的引擎：编辑器、热重载、平台差异、发布、遥测、协作。最后收束：回顾引擎的形状，谈下一台引擎。
 
+## 四仓的包地图
+
+`Hazel` 的包地图在仓库根：`Hazel` 是引擎，`Sandbox` 是样例，`Hazelnut` 是编辑器。查一个东西先看根目录有哪个包。
+
+```bash
+# Hazel 的包先分：引擎、样例、编辑器，查一个从引擎点名
+ls | head # 看引擎在哪个包
+grep -rn "class Application" Hazel/src/Hazel/Core/Application.h | head # 看引擎主循环在哪
+```
+
+`MonoGame` 的包地图在框架仓根：`MonoGame.Framework` 是框架本体，`Tests` 是测试。查一个东西先看框架在哪个包。
+
+```bash
+# MonoGame 的包先分：框架、内容流水线、测试，查一个从框架点名
+ls MonoGame.Framework | head # 看框架在哪个包
+grep -rn "class Game" MonoGame.Framework/Game.cs | head # 看游戏入口在哪
+```
+
+`Stride` 的包地图在 `sources/engine` 下：`Stride.Engine` 是引擎，`Stride.Graphics` 是图形，`Stride.Games` 是游戏抽象。查一个东西先看引擎在哪个包。
+
+```bash
+# Stride 的包先分：引擎、图形、游戏，查一个从游戏抽象点名
+ls sources/engine/Stride.Engine | head # 看游戏在哪个包
+grep -rn "class Game" sources/engine/Stride.Engine/Engine/Game.cs | head # 看游戏入口在哪
+```
+
+图上一读就知道哪块是引擎，哪块是样例，哪块是编辑器。查东西先看地图，再下包。
+
+## horizon 与 prisma-rev 在图里的位置
+
+`horizon` 是 Java 版 Minecraft 26.3 的重写。它的世界生成、实体、红石、命令、数据包分在几个包里，游戏侧是 `horizon-client` 的 `game.rs`。教程里看到的时钟、tick、帧图都在它那边有真身。
+
+`prisma-rev` 是从零写的渲染器。它按层分包：`prism-ecs` 是实体组件系统核心，`prism-gfx` 是跨场景的纯数据枚举，`prism-render` 是渲染后端，`prism-app` 是窗口和事件，`prism-platform` 是窗口后端。教程里看到的窗口、设备、交换链、帧图都在它那边有真身。
+
+两边对着看，就知道哪层是标准，哪层是自研。`horizon` 的形状由原版规格拍板，`prisma-rev` 的形状由自己拍板。
+
 ## 章与课怎么对
 
 课在 `src/content/curriculum.ts` 里只有标题。标题定下来，编号、文件名、静态页都自动跟着走。改课程表，导航自己更新。
@@ -51,14 +87,6 @@ struct ComponentPool<T> {
 
 引用块只提供仓库、文件、行号和「固定 / 最新 / 历史」跳转，完整实现点引用块去 GitHub 看。教程代码行号从 1 开始，与真实文件行号无关。
 
-## horizon 与 prisma-rev 在图里的位置
-
-`horizon` 是 Java 版 Minecraft 26.3 的重写。它的世界生成、实体、红石、命令、数据包分在几个包里，游戏侧是 `horizon-client` 的 `game.rs`。教程里看到的时钟、 tick、帧图都在它那边有真身。
-
-`prisma-rev` 是从零写的渲染器。它按层分包：`prism-ecs` 是实体组件系统核心，`prism-gfx` 是跨场景的纯数据枚举，`prism-render` 是渲染后端，`prism-app` 是窗口和事件，`prism-platform` 是窗口后端。教程里看到的窗口、设备、交换链、帧图都在它那边有真身。
-
-两边对着看，就知道哪层是标准，哪层是自研。`horizon` 的形状由原版规格拍板，`prisma-rev` 的形状由自己拍板。
-
 ## 双语对照
 
 C++ 教程通常先学语言再学图形。C# 教程通常先学界面再学引擎。Rust 这条线把地基放第一段，后面都长在上面。同样的顺序在两边都有：地基不牢，渲染写一半就散。
@@ -67,29 +95,38 @@ C++ 教程通常先学语言再学图形。C# 教程通常先学界面再学引�
 分段是怕后面没地基。地基在第一段定下来，后段只管一层。跳一层，下层就断。
 :::
 
-## 跟着看的结果
+## 四仓对照表
 
-完成标准：随手能说出自己现在在哪一章，上一章补了什么，下一章接什么。跳过哪一章，哪一课会找不到前置。
+| 写法 | 包在哪 | 层在哪 | 能查 | 适合谁 |
+|---|---|---|---|---|
+| `Hazel` 的包地图 | 仓库根分三 | 引擎/样例/编辑器 | 从根查 | 先看一眼 |
+| `MonoGame` 的包地图 | 框架仓根分两 | 框架/测试 | 从框架查 | 传统生产图 |
+| `Stride` 的包地图 | `sources/engine` 分三 | 引擎/图形/游戏 | 从游戏抽象查 | 生态大，作架构对照 |
+| `prisma-rev` 的层地图 | 工作区根固定成员 | 应用/引擎/渲染/平台 | 从应用层查 | 本教程主线 |
+| `horizon` 的包地图 | 工作区根几十包 | 游戏/世界/命令/输入 | 从游戏侧查 | 需求方，作功能对齐 |
 
-:::exercise{title="动手：标一下自己的位置"}
-打开课程列表，把你已经看完的章节标出来。找一个跳过的章节，看它在前面哪一课里被用到过。把缺口记下来：哪一课、为什么会缺、前置是什么。这就是下一课的活。
-:::
+表上能看：`Hazel` 短但图太浅，`MonoGame` 旧但顶事，`Stride` 全但重，`prisma-rev` 在线上和教程之间平衡。`horizon` 只作需求方。
 
-## horizon 的包地图长什么样
+## 本课定谁
 
-`horizon` 的根工作区是几十个包。游戏侧在 `horizon-client` 里，世界数据在 `horizon-world` 里，命令在 `horizon-command` 里，输入在 `horizon-client-input` 里。地图先把包分开。拿着地图，先看游戏侧的 `game.rs`，再看输入包的 `window.rs`。
+不是选最简单，选生产级。单人引擎的包地图，我定 `prisma-rev` 的层地图：工作区根固定成员，层之间不反向依赖。
 
-```bash
-# horizon 的包先分：游戏、世界、命令、输入，查一个从游戏侧点名
-ls crates | head # 看游戏侧在哪个包
-grep -rn "fn tick" crates/horizon-client/src/game.rs | head # 看游戏侧主循环在哪
+理由有三条。
+
+一是生产级。成员和依赖写死在清单里，环直接拦住。`Hazel` 那种全在根上，改个包名就断一片。
+
+二是结构清楚。应用层管窗口，引擎层管运行时，渲染层管后端。查东西从应用层点名，名对得上。
+
+三是可测试。层清楚了，测试也清楚。测试灌的都是包上层，不用把仓库全拖进来。
+
+## 手写最小示例
+
+```rust
+// 手写版：工作区根只管成员名单，成员清单管自己的依赖
+// workspace 根
+[workspace]
+members = ["crates/*"] // 成员名单直接对
 ```
-
-图上一读就知道哪块是游戏，哪块是世界，哪块是命令。查东西先看地图，再下包。
-
-## prisma-rev 的层地图长什么样
-
-`prisma-rev` 的根工作区是固定成员。`prism-app` 管窗口和事件，`prism-engine` 管运行时，`prism-render` 管后端，`prism-platform` 管窗口后端。层和层之间不反向依赖。
 
 ```bash
 # prisma-rev 的层先分：应用、引擎、渲染、平台，查一个从应用层点名
@@ -97,11 +134,9 @@ ls crates | head # 看核心包有哪些
 grep -rn "fn tick_sim" crates/prism-app/src/app.rs | head # 看应用层主循环在哪
 ```
 
-图上一读就知道哪层管窗口，哪层管渲染。窗口的事看应用层，渲染的事看渲染层，不串。
+## 双语对照
 
-## 双语对照再看
-
-C++ 教程的地图是章节目录。C# 教程的地图是课程表。Rust 这条线是课程表加静态页。三种地图都能先看位置再跳。位置先入眼，跳过去才对。
+C++ 里 `Hazel` 式的包地图是根上分三。C# 里 `MonoGame` 式是框架仓。C# 里 `Stride` 式是 `sources/engine` 分三。Rust 教程图是课程表加静态页。三种地图都能先看位置再跳。位置先入眼，跳过去才对。
 
 ## 跳过一章会缺什么
 
@@ -112,3 +147,22 @@ C++ 教程的地图是章节目录。C# 教程的地图是课程表。Rust 这�
 :::exercise{title="动手：指一下地图"}
 打开课程列表，指一下现在在哪。再往下指一章，看它要什么前置。把前置写在纸上。
 :::
+
+## 四仓在同一页上
+
+`Hazel` 的 `Application::Run` 是可变步进，短但飘。`horizon` 的 `FixedStep::advance` 是虚拟时钟，牢但重。`prisma-rev` 的 `tick_sim` 是固定累加器，够用且可复现。本课往下走，只跟第三种。
+
+## 验收对一遍
+
+```text
+[ ] 地图在手，哪一章
+[ ] 前置在前，哪一课
+[ ] 跳过哪一章，会缺哪一课
+[ ] 下一章接什么，图上指得到
+```
+
+四行打勾，这一课可以往下走了。
+
+## 下一课
+
+下一课是你交付的东西。可运行、可复现、可诊断、可交付，四块都缺不了。
